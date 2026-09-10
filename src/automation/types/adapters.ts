@@ -1,0 +1,9 @@
+import type { AutomationCapability } from './capabilities.js';
+import type { AutomationEventEnvelope } from './events.js';
+import type { DiscoveredDevice } from '../discovery/simulator-discovery-provider.js';
+export type AdapterLifecycleState='CREATED'|'INITIALIZING'|'CONNECTING'|'CONNECTED'|'DISCONNECTING'|'DISCONNECTED'|'ERROR'|'DISABLED';
+export interface AdapterHealth { status:AdapterLifecycleState; healthy:boolean; lastSuccessfulCommunication:string|null; lastAttemptedCommunication:string|null; latencyMs:number|null; lastError:string|null; consecutiveFailures:number; }
+export interface MappedNozzleIdentity { externalPumpId:string; externalNozzleId:string; nozzleNumber:number; }
+export interface MappedTankIdentity { externalTankId:string; probeNumber:number; }
+export interface AdapterContext { controllerId:string; configuration:Record<string,unknown>; emit:(event:AutomationEventEnvelope)=>Promise<void>; log:(level:string,category:string,message:string,details?:Record<string,unknown>)=>void; getCursor?:(stream:string)=>string|null; setCursor?:(stream:string,value:string,lastEventAt?:string)=>void; getMappedNozzles?:()=>MappedNozzleIdentity[]; getMappedTanks?:()=>MappedTankIdentity[]; }
+export interface ControllerAdapter { readonly type:string;readonly version:string;initialize(context:AdapterContext):Promise<void>;connect():Promise<void>;disconnect(reason?:string):Promise<void>;disable():Promise<void>;shutdown():Promise<void>;getStatus():AdapterLifecycleState;healthCheck():Promise<AdapterHealth>;discoverDevices():Promise<DiscoveredDevice[]>;getCapabilities():ReadonlySet<AutomationCapability|string>;refreshTotalizers?(externalNozzleIds?:string[]):Promise<void>;refreshTransactions?():Promise<void>;generateScenario?(scenario:string,options?:Record<string,unknown>):Promise<AutomationEventEnvelope[]>; }
