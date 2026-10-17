@@ -1,10 +1,10 @@
 Prerequisites: Node.js
 
 1.Install dependencies: 
-`npm install`
+  `npm install`
 2.Run Browser/backend dev:
-`npm run dev`
+  `npm run dev`
 3.run elecron development: 
-`npm run desktop:dev`
+  `npm run desktop:dev`
 4.create Windows installer:
-` npm run desktop:dist`
+  ` npm run desktop:dist`
