@@ -1,10 +1,26 @@
 import {strict as assert} from 'node:assert';
 import {mkdtempSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import path from 'node:path';import {test} from 'node:test';import Database from 'better-sqlite3';
-import {AdapterManager} from '../src/automation/adapters/adapter-manager.ts';import {AdapterRegistry} from '../src/automation/adapters/adapter-registry.ts';
+import {AdapterManager,mappedTanksFromMappings} from '../src/automation/adapters/adapter-manager.ts';import {AdapterRegistry} from '../src/automation/adapters/adapter-registry.ts';
+
+test('mapped PTS-2 tanks support every positive numeric probe ID',()=>{
+ assert.deepEqual(mappedTanksFromMappings([
+  {external_equipment_id:'1'},
+  {external_equipment_id:'21'},
+  {external_equipment_id:'200'},
+  {external_equipment_id:'0'},
+  {external_equipment_id:'TANK-A'},
+  {external_equipment_id:'2.5'}
+ ]),[
+  {externalTankId:'1',probeNumber:1},
+  {externalTankId:'21',probeNumber:21},
+  {externalTankId:'200',probeNumber:200}
+ ]);
+});
+
 test('Phase 4 simulator lifecycle and durable normalized events',async()=>{
  const dir=mkdtempSync(path.join(tmpdir(),'dt-fms-adapter-')),file=path.join(dir,'fms.db');const src=new Database(path.join(process.cwd(),'data','fms.db'),{readonly:true});await src.backup(file);src.close();const db=new Database(file);db.pragma('foreign_keys=ON');
  db.prepare(`INSERT INTO automation_controllers(id,station_id,name,adapter_type,connection_type,configuration_json,status,enabled) VALUES('sim-phase4','station-1','Phase 4 Simulator','SIMULATOR','SIMULATOR','{"simulatorMode":"SUCCESS"}','UNKNOWN',1)`).run();const manager=new AdapterManager(db);
- try{assert.equal((await manager.start('sim-phase4')).runtimeStatus,'CONNECTED');assert.ok((await manager.discover('sim-phase4')).length);await manager.scenario('sim-phase4','PUMP_STATE');await manager.scenario('sim-phase4','NOZZLE_STATE');const events=await manager.scenario('sim-phase4','DISPENSING');assert.deepEqual(events.map((e:any)=>e.eventType),['DISPENSING_STARTED','DISPENSING_PROGRESS','DISPENSING_COMPLETED']);assert.equal(manager.ingest(events[0]).duplicate,true);await manager.scenario('sim-phase4','SEQUENCE_GAP');assert.ok(db.prepare(`SELECT 1 FROM automation_logs WHERE category='SEQUENCE_ANOMALY'`).get());assert.ok(db.prepare(`SELECT 1 FROM automation_event_inbox WHERE processing_status='PROCESSED'`).get());assert.equal((await manager.disconnect('sim-phase4')).runtimeStatus,'DISCONNECTED');assert.equal((await manager.restart('sim-phase4')).runtimeStatus,'CONNECTED');const unsupported=new AdapterRegistry().create('PTS2');await unsupported.initialize({controllerId:'x',configuration:{},emit:async()=>{},log:()=>{}});await assert.rejects(()=>unsupported.connect(),/HARDWARE_INTEGRATION_DISABLED/);assert.throws(()=>manager.ingest({bad:true}),/Invalid normalized/);await manager.shutdown();assert.equal(db.pragma('foreign_key_check').length,0);}finally{await manager.shutdown();db.close();rmSync(dir,{recursive:true,force:true});}
+ try{assert.equal((await manager.start('sim-phase4')).runtimeStatus,'CONNECTED');assert.ok((await manager.discover('sim-phase4')).length);await manager.scenario('sim-phase4','PUMP_STATE');await manager.scenario('sim-phase4','NOZZLE_STATE');const events=await manager.scenario('sim-phase4','DISPENSING');assert.deepEqual(events.map((e:any)=>e.eventType),['DISPENSING_STARTED','DISPENSING_PROGRESS','DISPENSING_COMPLETED']);assert.equal(manager.ingest(events[0]).duplicate,true);await manager.scenario('sim-phase4','SEQUENCE_GAP');assert.ok(db.prepare(`SELECT 1 FROM automation_logs WHERE category='SEQUENCE_ANOMALY'`).get());assert.ok(db.prepare(`SELECT 1 FROM automation_event_inbox WHERE processing_status='PROCESSED'`).get());assert.equal((await manager.disconnect('sim-phase4')).runtimeStatus,'DISCONNECTED');assert.equal((await manager.restart('sim-phase4')).runtimeStatus,'CONNECTED');const unsupported=new AdapterRegistry().create('PTS2');await unsupported.initialize({controllerId:'x',configuration:{},emit:async()=>{},log:()=>{}});await assert.rejects(()=>unsupported.connect(),/PTS2_CREDENTIALS_REQUIRED/);assert.throws(()=>manager.ingest({bad:true}),/Invalid normalized/);await manager.shutdown();assert.equal(db.pragma('foreign_key_check').length,0);}finally{await manager.shutdown();db.close();rmSync(dir,{recursive:true,force:true});}
 });
 
 test('sequence duplicate and out-of-order anomalies are retained without inventing events',async()=>{

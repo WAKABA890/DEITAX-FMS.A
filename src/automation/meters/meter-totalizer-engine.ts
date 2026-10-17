@@ -92,16 +92,16 @@ export class MeterTotalizerEngine{
       const sequence=event.sourceSequence==null?null:Number(event.sourceSequence);
       const previousSequence=previous?.source_sequence==null?null:Number(previous.source_sequence);
       let anomaly:string|null=null;
-      const savedSnapshot=v.controller.adapter_type==='PTS2'&&v.payload.sequenceUnavailable===true;
-      if(savedSnapshot){
+      const pts2Snapshot=v.controller.adapter_type==='PTS2'&&v.payload.sequenceUnavailable===true;
+      if(pts2Snapshot){
         if(previous&&Date.parse(event.sourceOccurredAt)<Date.parse(previous.source_occurred_at))anomaly='OUT_OF_ORDER';
-        else if(previous&&v.reading<Number(previous.reading_value))anomaly='METER_DECREASE';
+        else if(previous&&v.reading<Number(previous.reading_value))anomaly='METER_RESET';
       }
       else if(sequence==null)anomaly='MISSING_SEQUENCE';
       else if(!Number.isFinite(sequence))anomaly='INVALID_SEQUENCE';
       else if(previousSequence!=null&&sequence!=null&&sequence===previousSequence)anomaly='DUPLICATE_SEQUENCE';
       else if(previousSequence!=null&&sequence!=null&&sequence<previousSequence)anomaly='OUT_OF_ORDER';
-      else if(previous&&Date.parse(event.sourceOccurredAt)<=Date.parse(previous.source_occurred_at))anomaly='OUT_OF_ORDER';
+      else if(previous&&Date.parse(event.sourceOccurredAt)<Date.parse(previous.source_occurred_at))anomaly='OUT_OF_ORDER';
       else if(previous&&v.reading<Number(previous.reading_value))anomaly=v.payload.resetIndicator===true?'METER_RESET':'METER_DECREASE';
       else if(previousSequence!=null&&sequence!=null&&sequence>previousSequence+1)anomaly='SEQUENCE_GAP';
       const acceptedForCurrent=!['DUPLICATE_SEQUENCE','OUT_OF_ORDER','METER_DECREASE'].includes(anomaly||'');
@@ -113,7 +113,7 @@ export class MeterTotalizerEngine{
       if(acceptedForCurrent){
         this.sqlite.prepare(`INSERT INTO automation_meter_current_state(controller_id,station_id,external_parent_id,external_device_id,pump_id,nozzle_id,product_id,current_reading_id,previous_reading_id,current_value,previous_value,calculated_delta,unit,last_sequence,last_source_occurred_at,last_received_at,last_valid_reading_at,last_anomaly,correlation_status,transaction_id)
           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(controller_id,external_parent_id,external_device_id) DO UPDATE SET station_id=excluded.station_id,pump_id=excluded.pump_id,nozzle_id=excluded.nozzle_id,product_id=excluded.product_id,current_reading_id=excluded.current_reading_id,previous_reading_id=excluded.previous_reading_id,current_value=excluded.current_value,previous_value=excluded.previous_value,calculated_delta=excluded.calculated_delta,unit=excluded.unit,last_sequence=excluded.last_sequence,last_source_occurred_at=excluded.last_source_occurred_at,last_received_at=excluded.last_received_at,last_valid_reading_at=excluded.last_valid_reading_at,last_anomaly=excluded.last_anomaly,correlation_status=excluded.correlation_status,transaction_id=excluded.transaction_id,updated_at=CURRENT_TIMESTAMP`).run(event.controllerId,v.controller.station_id,v.externalPumpId,v.externalNozzleId,v.pump.id,v.nozzle.id,v.product?.id||null,readingId,previous?.id||null,v.reading,previous?.reading_value??null,delta,'L',event.sourceSequence||null,event.sourceOccurredAt,event.receivedAt,event.sourceOccurredAt,anomaly,correlation.status,correlation.transactionId);
-        if(event.source==='PTS2_PUMP_TOTALS'||savedSnapshot){
+        if(event.source==='PTS2_PUMP_TOTALS'||pts2Snapshot){
           this.sqlite.prepare(`UPDATE pump_nozzles SET current_meter_reading=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(v.reading,v.nozzle.id);
         }
       }
@@ -127,7 +127,7 @@ export class MeterTotalizerEngine{
 
   private correlate(event:AutomationEventEnvelope,delta:number|null){
     if(!event.correlationId||delta==null)return{status:'NOT_AVAILABLE' as const,transactionId:null,volume:null};
-    const row=this.sqlite.prepare(`SELECT p.transaction_id,t.quantity FROM automation_event_inbox i JOIN automation_fuel_transaction_processing p ON p.inbox_id=i.id JOIN transactions t ON t.id=p.transaction_id WHERE i.correlation_id=? AND p.processing_status='POSTED' ORDER BY p.posted_at DESC LIMIT 1`).get(event.correlationId) as any;
+    const row=this.sqlite.prepare(`SELECT p.transaction_id,t.quantity FROM automation_event_inbox i JOIN automation_fuel_transaction_processing p ON p.inbox_id=i.id JOIN transactions t ON t.id=p.transaction_id WHERE i.correlation_id=? AND i.controller_id=? AND p.processing_status='POSTED' ORDER BY p.posted_at DESC LIMIT 1`).get(event.correlationId,event.controllerId) as any;
     if(!row)return{status:'NOT_AVAILABLE' as const,transactionId:null,volume:null};
     return{status:Math.abs(Number(row.quantity)-delta)<=0.001?'MATCHED' as const:'MISMATCH' as const,transactionId:row.transaction_id as string,volume:Number(row.quantity)};
   }

@@ -44,9 +44,10 @@ export function createMeterRouter(deps:{sqlite:Database.Database;requirePermissi
       for(const [key,column] of filters){const value=String(req.query[key]||'').trim();if(value){clauses.push(`${column}=?`);params.push(value);}}
       for(const [key,operator] of [['from','>='],['to','<=']] as const){const value=String(req.query[key]||'').trim();if(value){if(!Number.isFinite(Date.parse(value)))return res.status(400).json({success:false,code:'INVALID_DATE_FILTER',message:`${key} must be an ISO timestamp.`});clauses.push(`r.source_occurred_at ${operator} ?`);params.push(new Date(value).toISOString());}}
       const limit=Math.min(500,Math.max(1,Number(req.query.limit)||100));
-      const records=deps.sqlite.prepare(`SELECT r.*,p.pump_name,p.pump_number,n.nozzle_name,n.nozzle_number,fp.name product_name,fp.code product_code,c.name controller_name FROM automation_meter_readings r JOIN pumps p ON p.id=r.pump_id JOIN pump_nozzles n ON n.id=r.nozzle_id LEFT JOIN fuel_products fp ON fp.id=r.product_id JOIN automation_controllers c ON c.id=r.controller_id WHERE ${clauses.join(' AND ')} ORDER BY r.source_occurred_at DESC,r.created_at DESC LIMIT ?`).all(...params,limit);
+      const page=Math.max(1,Number(req.query.page)||1),offset=(page-1)*limit;
+      const records=deps.sqlite.prepare(`SELECT r.*,p.pump_name,p.pump_number,n.nozzle_name,n.nozzle_number,fp.name product_name,fp.code product_code,c.name controller_name FROM automation_meter_readings r JOIN pumps p ON p.id=r.pump_id JOIN pump_nozzles n ON n.id=r.nozzle_id LEFT JOIN fuel_products fp ON fp.id=r.product_id JOIN automation_controllers c ON c.id=r.controller_id WHERE ${clauses.join(' AND ')} ORDER BY r.source_occurred_at DESC,r.created_at DESC LIMIT ? OFFSET ?`).all(...params,limit,offset);
       const total=(deps.sqlite.prepare(`SELECT COUNT(*) count FROM automation_meter_readings r WHERE ${clauses.join(' AND ')}`).get(...params) as any).count;
-      res.json({records,total,limit});
+      res.json({records,total,limit,page});
     }catch(error){console.error('[Automation] Meter history query failed safely:',error);res.status(503).json({success:false,code:'METER_HISTORY_UNAVAILABLE',message:'Meter history is temporarily unavailable.'});}
   });
   return router;

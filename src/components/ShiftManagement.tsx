@@ -20,6 +20,7 @@ import {
   Trash2,
   Check,
   Printer,
+  Search,
 } from 'lucide-react';
 import {
   ShiftSession,
@@ -42,7 +43,7 @@ interface ShiftManagementProps {
   tanks: FuelTank[];
   reconciliations?: ThreeWayReconciliation[];
   currentUser: UserType;
-  onReprintReconciliation?: (reconciliation: ThreeWayReconciliation) => void;
+  onViewShiftReport?: (shiftId: string) => void;
   onClockInSubmit: (
     userId: string,
     pin: string,
@@ -123,7 +124,7 @@ export const ShiftManagement: React.FC<ShiftManagementProps> = ({
   tanks = [],
   reconciliations = [],
   currentUser,
-  onReprintReconciliation,
+  onViewShiftReport,
   onClockInSubmit,
   onSubmitReconciliation,
   onAssignSchedule,
@@ -141,6 +142,7 @@ export const ShiftManagement: React.FC<ShiftManagementProps> = ({
   const safeTanks = Array.isArray(tanks) ? tanks : [];
   const safeShifts = Array.isArray(shifts) ? shifts : [];
   const [activeTab, setActiveTab] = useState<'shifts' | 'roster' | 'schedules'>('shifts');
+  const [historySearchTerm, setHistorySearchTerm] = useState('');
   const [rosterPeriod, setRosterPeriod] = useState<'upcoming' | 'ongoing' | 'completed'>('upcoming');
   const [selectedRosterStatus, setSelectedRosterStatus] = useState<ShiftSchedule['status']>('Upcoming');
   const [selectedRoster, setSelectedRoster] = useState<ShiftPlan | null>(null);
@@ -206,6 +208,15 @@ export const ShiftManagement: React.FC<ShiftManagementProps> = ({
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return '—';
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  };
+  const reconciliationPumpLabel = (pump: PumpNozzle) => {
+    const pumpNumber = Number(pump.pumpNumber);
+    const nozzleNumber = Number(pump.nozzleNumber ?? 1);
+    const pumpIdentifier = Number.isInteger(pumpNumber) && pumpNumber > 0
+      ? String(pumpNumber).padStart(2, '0')
+      : pump.pumpName || '—';
+    const nozzleIdentifier = Number.isInteger(nozzleNumber) && nozzleNumber > 0 ? nozzleNumber : 1;
+    return `Pump ${pumpIdentifier} Nozzle ${nozzleIdentifier} / ${pump.fuelName || 'Fuel'}`;
   };
   const scheduledTimeRangeLabel = (start?: string | null, end?: string | null) => {
     const formatTime = (value?: string | null) => {
@@ -474,7 +485,52 @@ export const ShiftManagement: React.FC<ShiftManagementProps> = ({
     const bTime=Date.parse(b.endTime||b.startTime||'')||0;const aTime=Date.parse(a.endTime||a.startTime||'')||0;
     return bTime-aTime || String(b.id).localeCompare(String(a.id));
   });
-  const historyPagination = usePagination(pastShiftsList, pastShiftsList.map((shift) => `${shift.id}:${shift.status}:${shift.endTime}`).join('|'));
+  const getShiftDurationParts = (shift: ShiftSession) => {
+    const startTime = Date.parse(shift.startTime || '');
+    const endTime = Date.parse(shift.endTime || '');
+    if (!Number.isFinite(startTime) || !Number.isFinite(endTime) || endTime < startTime) return null;
+    const totalMinutes = Math.floor((endTime - startTime) / 60000);
+    return { hours: Math.floor(totalMinutes / 60), minutes: totalMinutes % 60 };
+  };
+  const getShiftHistorySearchText = (shift: ShiftSession) => {
+    const timestampTerms = [shift.startTime, shift.endTime].flatMap((timestamp) => {
+      const parsedTimestamp = Date.parse(timestamp || '');
+      if (!Number.isFinite(parsedTimestamp)) return [timestamp || ''];
+      const date = new Date(parsedTimestamp);
+      return [
+        timestamp || '',
+        date.toISOString().slice(0, 10),
+        date.toLocaleDateString('en-KE'),
+        date.toLocaleDateString('en-US'),
+        date.toLocaleDateString('en-KE', { year: 'numeric', month: 'short', day: '2-digit' }),
+        date.toLocaleDateString('en-KE', { weekday: 'long' }),
+        date.toLocaleDateString('en-KE', { weekday: 'short' }),
+        safeTimeLabel(timestamp),
+      ];
+    });
+    const duration = getShiftDurationParts(shift);
+    const durationTerms = duration ? [
+      `${duration.hours}h`,
+      `${duration.hours}h ${duration.minutes}m`,
+      `${duration.hours} hours`,
+      `${duration.hours} hrs`,
+      `${duration.hours} hours ${duration.minutes} minutes`,
+    ] : [];
+    return [shift.id, shift.staffName, shift.staffRole, shift.shiftType, shift.status, ...timestampTerms, ...durationTerms]
+      .join(' ')
+      .toLocaleLowerCase();
+  };
+  const historySearchTerms = historySearchTerm.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+  const filteredPastShiftsList = historySearchTerms.length === 0
+    ? pastShiftsList
+    : pastShiftsList.filter((shift) => {
+      const searchableHistory = getShiftHistorySearchText(shift);
+      return historySearchTerms.every((term) => searchableHistory.includes(term));
+    });
+  const historyPagination = usePagination(
+    filteredPastShiftsList,
+    `${historySearchTerms.join('|')}:${filteredPastShiftsList.map((shift) => `${shift.id}:${shift.status}:${shift.endTime}`).join('|')}`
+  );
   const rosterStatuses = ['Upcoming', 'Due', 'In Progress', 'Completed', 'Stale', 'Cancelled'];
   const rosterStatusCounts = Object.fromEntries(rosterStatuses.map((status) => [status, schedules.filter((schedule) => schedule.status === status).length]));
   const currentRosterSchedules = schedules
@@ -519,7 +575,7 @@ export const ShiftManagement: React.FC<ShiftManagementProps> = ({
             <span>Pump Attendant & Cashier Shift Control</span>
           </div>
           <h2 className="text-xl font-bold text-white flex items-center gap-2">
-            Shift Clock-In, Meter Audit & 3-Way Reconciliation
+            Shift & Clock-In
           </h2>
           <p className="text-xs text-slate-400 mt-1">
             Clock-out is manual and must be completed by the staff member when the shift ends. Restarting the app does not close an active shift.
@@ -649,7 +705,20 @@ export const ShiftManagement: React.FC<ShiftManagementProps> = ({
 
           {/* Past Shift History */}
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
-            <h3 className="text-sm font-bold text-white">Shift Audit & Reconciliation History</h3>
+            <div className="flex flex-col gap-3 border-b border-slate-800 pb-3 sm:flex-row sm:items-center sm:justify-between">
+              <h3 className="text-sm font-bold text-white">Shift Audit & Reconciliation History</h3>
+              <label className="flex w-full items-center gap-2 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 sm:max-w-md">
+                <Search className="h-4 w-4 shrink-0 text-slate-400" />
+                <input
+                  type="search"
+                  aria-label="Search shift history"
+                  value={historySearchTerm}
+                  onChange={(event) => setHistorySearchTerm(event.target.value)}
+                  placeholder="Search date, user, day, time, or hours"
+                  className="min-w-0 flex-1 bg-transparent text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none"
+                />
+              </label>
+            </div>
 
             <div className="overflow-x-auto">
               <table className="fms-table min-w-[760px] text-left text-xs">
@@ -667,8 +736,15 @@ export const ShiftManagement: React.FC<ShiftManagementProps> = ({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800/60">
-                  {historyPagination.pageItems.map((s) => {
+                  {historyPagination.pageItems.length === 0 ? (
+                    <tr>
+                      <td colSpan={9} className="p-8 text-center text-xs text-slate-500">No shift history matches the current search.</td>
+                    </tr>
+                  ) : historyPagination.pageItems.map((s) => {
                     const reconciliation = reconciliations.find((record) => record.shiftId === s.id);
+                    const shiftDuration = s.endTime && getShiftDurationParts(s)
+                      ? formatShiftDuration(s.startTime, s.endTime)
+                      : null;
                     return <tr key={s.id} className="hover:bg-slate-800/40">
                       <td className="p-3 font-bold text-white">
                         <div>{s.staffName}</div>
@@ -679,6 +755,7 @@ export const ShiftManagement: React.FC<ShiftManagementProps> = ({
                       <td className="p-3 text-slate-400 text-[11px]">
                         <div>In: {safeTimeLabel(s.startTime)}</div>
                         {s.endTime && <div>Out: {safeTimeLabel(s.endTime)}</div>}
+                        {shiftDuration && <div>Duration: {shiftDuration}</div>}
                       </td>
                       <td className="p-3 text-right font-mono text-slate-300">KES {toSafeNumber(s.totalExpectedCash).toFixed(2)}</td>
                       <td className="p-3 text-right font-mono font-bold text-emerald-400">
@@ -702,9 +779,9 @@ export const ShiftManagement: React.FC<ShiftManagementProps> = ({
                       </td>
                       <td className="p-3 text-right">
                         {reconciliation ? (
-                          <button type="button" onClick={() => onReprintReconciliation?.(reconciliation)} className="inline-flex items-center gap-1 rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-[10px] font-bold text-slate-200 hover:bg-slate-700" title="Preview and reprint shift reconciliation">
+                          <button type="button" onClick={() => onViewShiftReport?.(s.id)} disabled={!onViewShiftReport} className="inline-flex items-center gap-1 rounded-lg border border-slate-700 bg-slate-800 px-2.5 py-1.5 text-[10px] font-bold text-slate-200 hover:bg-slate-700 disabled:opacity-50" title="View this shift in the 3-way ledger">
                             <Printer className="h-3.5 w-3.5 text-emerald-400" />
-                            Reprint Report
+                            View shift report
                           </button>
                         ) : <span className="text-[10px] text-slate-500">No report</span>}
                       </td>
@@ -713,7 +790,7 @@ export const ShiftManagement: React.FC<ShiftManagementProps> = ({
                 </tbody>
               </table>
             </div>
-            <PaginationControls currentPage={historyPagination.currentPage} totalPages={historyPagination.totalPages} itemCount={pastShiftsList.length} onPageChange={historyPagination.setCurrentPage} />
+            <PaginationControls currentPage={historyPagination.currentPage} totalPages={historyPagination.totalPages} itemCount={filteredPastShiftsList.length} onPageChange={historyPagination.setCurrentPage} />
           </div>
         </div>
       ) : activeTab === 'roster' ? (
@@ -1096,11 +1173,10 @@ export const ShiftManagement: React.FC<ShiftManagementProps> = ({
                     className="bg-slate-950 p-3 rounded-xl border border-slate-800 flex items-center justify-between gap-3"
                   >
                     <div>
-                      <div className="font-bold text-white">{p.pumpName}</div>
-                      <div className="text-[10px] text-emerald-400">{p.fuelName}</div>
+                      <div className="font-bold text-white">{reconciliationPumpLabel(p)}</div>
                     </div>
                     <div className="flex items-center gap-2">
-                      <div className="text-[10px] text-slate-400">Baseline: {Number(p.previousClosingMeter??p.currentMeterReading).toFixed(3)} L<br/>System / PTS-2: {Number(p.currentMeterReading).toFixed(3)} L</div><span className="text-slate-400 text-[11px]">Your observed meter (L):</span>
+                      <div className="text-[10px] text-slate-400">Baseline: {p.currentMeterReading==null?'Unavailable':Number(p.currentMeterReading).toFixed(3)+' L'}<br/>System / PTS-2: {p.currentMeterReading==null?'Unavailable':Number(p.currentMeterReading).toFixed(3)+' L'}</div><span className="text-slate-400 text-[11px]">Your observed meter (L):</span>
                       <input
                         type="number"
                         step="0.1"
@@ -1336,15 +1412,15 @@ export const ShiftManagement: React.FC<ShiftManagementProps> = ({
                     selectedShiftToReconcile.openingPumpReadings?.find((op) => op.pumpId === p.id)?.openingMeter ??
                     p.openingMeterReading;
                   const closing = p.currentMeterReading;
-                  const salesL = Math.max(0, closing - opening);
+                  const salesL = closing==null||!Number.isFinite(closing)||closing<opening ? null : closing-opening;
                   return (
                     <div
                       key={p.id}
                       className="bg-slate-950 p-3 rounded-xl border border-slate-800 flex items-center justify-between gap-2"
                     >
                       <div>
-                        <div className="font-bold text-white">{p.pumpName} ({p.fuelName})</div>
-                        <div className="text-[10px] text-slate-400">Opening baseline: {opening.toFixed(3)} L<br/>System / PTS-2: {Number(p.currentMeterReading).toFixed(3)} L</div>
+                        <div className="font-bold text-white">{reconciliationPumpLabel(p)}</div>
+                        <div className="text-[10px] text-slate-400">Opening baseline: {opening.toFixed(3)} L<br/>System / PTS-2: {p.currentMeterReading==null?'Unavailable':Number(p.currentMeterReading).toFixed(3)+' L'}</div>
                       </div>
                       <div className="flex items-center gap-3">
                         <div className="text-right">
@@ -1359,7 +1435,7 @@ export const ShiftManagement: React.FC<ShiftManagementProps> = ({
                         </div>
                         <div className="text-right w-20">
                           <span className="text-[10px] text-slate-500 block">Dispensed</span>
-                          <span className="font-bold text-white font-mono">{salesL.toFixed(3)} L</span>
+                          <span className="font-bold text-white font-mono">{salesL==null?'Meter review required':salesL.toFixed(3)+' L'}</span>
                         </div>
                       </div>
                     </div>

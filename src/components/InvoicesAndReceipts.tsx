@@ -24,7 +24,6 @@ import {
   History,
   Clock,
   Truck,
-  Scale,
 } from 'lucide-react';
 import {
   Transaction,
@@ -33,8 +32,6 @@ import {
   User as UserType,
   CustomerAccount,
   FuelDelivery,
-  ShiftSession,
-  ThreeWayReconciliation,
 } from '../types';
 import { PaginationControls, usePagination } from './PaginationControls';
 import { printSelectedDocument } from '../utils/print-document';
@@ -50,13 +47,10 @@ interface InvoicesAndReceiptsProps {
   creditNotes?: CreditNote[];
   customers?: CustomerAccount[];
   deliveries?: FuelDelivery[];
-  shifts?: ShiftSession[];
-  reconciliations?: ThreeWayReconciliation[];
-  reprintReconciliation?: ThreeWayReconciliation | null;
-  onReprintReconciliationHandled?: () => void;
   stationSettings?: StationSettings;
   settings?: StationSettings;
   currentUser?: UserType;
+  moduleView?: 'invoices' | 'customers';
   onIssueCreditNote?: (data: any) => Promise<CreditNote>;
   onCreateCreditNote?: (data: any) => Promise<CreditNote>;
   onOpenReceipt?: (tx: Transaction) => void;
@@ -70,13 +64,10 @@ export const InvoicesAndReceipts: React.FC<InvoicesAndReceiptsProps> = ({
   creditNotes = [],
   customers = [],
   deliveries = [],
-  shifts = [],
-  reconciliations = [],
-  reprintReconciliation,
-  onReprintReconciliationHandled,
   stationSettings,
   settings,
   currentUser,
+  moduleView = 'invoices',
   onIssueCreditNote,
   onCreateCreditNote,
   onOpenReceipt,
@@ -106,33 +97,23 @@ export const InvoicesAndReceipts: React.FC<InvoicesAndReceiptsProps> = ({
   const safeCreditNotes = Array.isArray(creditNotes) ? creditNotes : [];
   const safeCustomers = Array.isArray(customers) ? customers : [];
   const safeDeliveries = Array.isArray(deliveries) ? deliveries : [];
-  const safeShifts = Array.isArray(shifts) ? shifts : [];
-  const safeReconciliations = Array.isArray(reconciliations) ? reconciliations : [];
 
   const activeSettings = stationSettings || settings;
   const issueCreditNoteHandler = onIssueCreditNote || onCreateCreditNote;
 
-  const [activeSubTab, setActiveSubTab] = useState<'invoices' | 'customers' | 'credit-notes' | 'document-history' | 'deliveries' | 'reconciliations'>('invoices');
+  const [activeSubTab, setActiveSubTab] = useState<'invoices' | 'customers' | 'credit-notes' | 'document-history' | 'deliveries'>(moduleView === 'customers' ? 'customers' : 'invoices');
   const [searchTerm, setSearchTerm] = useState('');
+  const isCustomersModule = moduleView === 'customers';
+
+  useEffect(() => {
+    setActiveSubTab(isCustomersModule ? 'customers' : 'invoices');
+    setSearchTerm('');
+  }, [isCustomersModule]);
   const [selectedDoc, setSelectedDoc] = useState<{ type: string; title: string; docNo: string; timestamp: string; customer?: string; details: any } | null>(null);
   const [creditNoteDocumentLock, setCreditNoteDocumentLock] = useState<{ type: 'receipt' | 'invoice'; docNo: string } | null>(null);
   const [printError, setPrintError] = useState<string | null>(null);
   const [isGeneratingDocumentPdf, setIsGeneratingDocumentPdf] = useState(false);
   const reprintDocumentRef = useRef<HTMLElement | null>(null);
-
-  useEffect(() => {
-    if (!reprintReconciliation) return;
-    setActiveSubTab('reconciliations');
-    setSelectedDoc({
-      type: 'Shift Reconciliation',
-      title: 'Shift Reconciliation',
-      docNo: reprintReconciliation.id.toUpperCase(),
-      timestamp: reprintReconciliation.timestamp,
-      customer: `Staff: ${reprintReconciliation.staffName}`,
-      details: reprintReconciliation,
-    });
-    onReprintReconciliationHandled?.();
-  }, [reprintReconciliation, onReprintReconciliationHandled]);
 
   useEffect(() => {
     if (!selectedDoc) return;
@@ -159,6 +140,7 @@ export const InvoicesAndReceipts: React.FC<InvoicesAndReceiptsProps> = ({
   const [cnSelectedItems, setCnSelectedItems] = useState<Record<string, {
     itemId: string;
     originalItemId?: string;
+    sourceNozzleId?: string;
     name: string;
     type: 'Fuel' | 'Shop';
     selected: boolean;
@@ -198,6 +180,7 @@ export const InvoicesAndReceipts: React.FC<InvoicesAndReceiptsProps> = ({
     '11': 'Wrong Item(s)',
     '12': 'Wrong Tax Type',
     '13': 'Other Reason',
+    RTT: 'Return to Tank',
   } as const;
 
   const normalizeDocumentNumber = (value: string | undefined, prefix: 'Rcpt' | 'Inv' | 'Cn') => {
@@ -281,6 +264,7 @@ export const InvoicesAndReceipts: React.FC<InvoicesAndReceiptsProps> = ({
   };
 
   const getRemainingCreditQty = (tx: Transaction, sourceItem: Transaction['items'][number]) => {
+    const sourceNozzleId = String(sourceItem.nozzleId || sourceItem.pumpId || '').trim();
     const creditedQty = safeCreditNotes.reduce((sum, creditNote) => {
       if (creditNote.status === 'Voided') return sum;
       const sameTransaction = creditNote.originalTransactionId === tx.id;
@@ -290,7 +274,8 @@ export const InvoicesAndReceipts: React.FC<InvoicesAndReceiptsProps> = ({
       return sum + (creditNote.items || []).reduce((itemSum, item) => {
         const sameItemId = !!item.originalItemId && item.originalItemId === sourceItem.itemId;
         const sameName = String(item.name || '').trim().toLowerCase() === String(sourceItem.name || '').trim().toLowerCase();
-        return sameItemId || sameName ? itemSum + Number(item.quantity ?? item.qty ?? 0) : itemSum;
+        const sameNozzle = !sourceNozzleId || !item.sourceNozzleId || String(item.sourceNozzleId).trim() === sourceNozzleId;
+        return (sameItemId || sameName) && sameNozzle ? itemSum + Number(item.quantity ?? item.qty ?? 0) : itemSum;
       }, 0);
     }, 0);
     return Math.max(Number(sourceItem.qty || 0) - creditedQty, 0);
@@ -309,6 +294,7 @@ export const InvoicesAndReceipts: React.FC<InvoicesAndReceiptsProps> = ({
         return {
           itemId: item.itemId,
           originalItemId: item.originalItemId || item.itemId,
+          sourceNozzleId: item.sourceNozzleId,
           name: item.name,
           type: item.type,
           qty,
@@ -491,7 +477,7 @@ export const InvoicesAndReceipts: React.FC<InvoicesAndReceiptsProps> = ({
     const creditTaxRateMap = { A: 0, B: 0.16, C: 0, D: 0, E: 0.08 } as const;
 
     const nextSelection = (tx?.items || []).reduce((acc, item, index) => {
-      const key = item.itemId || `${item.name}-${index}`;
+      const key = `${item.itemId || item.name}-${item.nozzleId || item.pumpId || "nozzle"}-${index}`;
       const unitPrice = Number(item.unitPrice || 0);
       const originalQty = Number(item.qty || 0);
       const availableQty = tx ? getRemainingCreditQty(tx, item) : originalQty;
@@ -503,6 +489,7 @@ export const InvoicesAndReceipts: React.FC<InvoicesAndReceiptsProps> = ({
       acc[key] = {
         itemId: item.itemId || key,
         originalItemId: item.itemId || key,
+        sourceNozzleId: item.nozzleId || item.pumpId || undefined,
         name: item.name,
         type: item.type || 'Fuel',
         selected: availableQty > 0,
@@ -521,6 +508,7 @@ export const InvoicesAndReceipts: React.FC<InvoicesAndReceiptsProps> = ({
     }, {} as Record<string, {
       itemId: string;
       originalItemId?: string;
+      sourceNozzleId?: string;
       name: string;
       type: 'Fuel' | 'Shop';
       selected: boolean;
@@ -679,13 +667,13 @@ export const InvoicesAndReceipts: React.FC<InvoicesAndReceiptsProps> = ({
       return;
     }
     if (!custName || !custPin || !onSaveCustomer) {
-      setCustomerFormError('Customer name and KRA PIN are required.');toast.error('Customer name and KRA PIN are required.');
+      setCustomerFormError('Customer name and Tax PIN are required.');toast.error('Customer name and Tax PIN are required.');
       return;
     }
     const duplicateName=safeCustomers.some(customer=>customer.id!==editingCustomer?.id&&customer.name.trim().toLowerCase()===custName.trim().toLowerCase());
     if(duplicateName){setCustomerFormError('A customer with this name already exists.');toast.error('A customer with this name already exists.');return;}
     const duplicate = safeCustomers.some((customer) => customer.id !== editingCustomer?.id && customer.kraPin?.trim().toUpperCase() === custPin.trim().toUpperCase());
-    if (duplicate) { setCustomerFormError('A customer with this KRA PIN already exists.');toast.error('A customer with this KRA PIN already exists.'); return; }
+    if (duplicate) { setCustomerFormError('A customer with this Tax PIN already exists.');toast.error('A customer with this Tax PIN already exists.'); return; }
     setIsSubmittingCust(true);
     try {
       const vArray = custVehicles
@@ -806,6 +794,7 @@ export const InvoicesAndReceipts: React.FC<InvoicesAndReceiptsProps> = ({
       const preparedItems = selectedEntries.length > 0 ? selectedEntries : [{
         itemId: `cn-item-${Date.now()}`,
         originalItemId: sourceItems[0]?.itemId,
+        sourceNozzleId: sourceItems[0]?.nozzleId || sourceItems[0]?.pumpId || undefined,
         name: cnItemName || sourceItems[0]?.name || 'Selected Item',
         type: sourceItems[0]?.type || 'Shop',
         qty: Number(cnQty || 0),
@@ -814,11 +803,15 @@ export const InvoicesAndReceipts: React.FC<InvoicesAndReceiptsProps> = ({
       }];
 
       const preparedEntries = preparedItems.map((entry) => {
+        const sourceNozzleId = String(entry.sourceNozzleId || '').trim();
         const matchingOriginalItem = sourceItems.find((src) => {
+          const sameNozzle = !sourceNozzleId || String(src.nozzleId || src.pumpId || '').trim() === sourceNozzleId;
           const sameId = entry.originalItemId && entry.originalItemId.trim() && src.itemId && src.itemId === entry.originalItemId;
           const sameName = !sameId && String(src.name || '').trim().toLowerCase() === String(entry.name || '').trim().toLowerCase();
-          return sameId || sameName;
-        }) || sourceItems.find((src) => String(src.name || '').trim().toLowerCase() === String(entry.name || '').trim().toLowerCase()) || sourceItems[0] || null;
+          return sameNozzle && (sameId || sameName);
+        }) || (!sourceNozzleId
+          ? sourceItems.find((src) => String(src.name || '').trim().toLowerCase() === String(entry.name || '').trim().toLowerCase()) || sourceItems[0] || null
+          : null);
 
         const qty = Number(entry.qty || 0);
         const unitPrice = Number(entry.unitPrice || matchingOriginalItem?.unitPrice || 0);
@@ -828,6 +821,7 @@ export const InvoicesAndReceipts: React.FC<InvoicesAndReceiptsProps> = ({
         return {
           itemId: entry.itemId || matchingOriginalItem?.itemId || `cn-item-${Date.now()}`,
           originalItemId: matchingOriginalItem?.itemId || entry.originalItemId || entry.itemId,
+          sourceNozzleId: matchingOriginalItem?.nozzleId || matchingOriginalItem?.pumpId || entry.sourceNozzleId || undefined,
           name: entry.name || matchingOriginalItem?.name || 'Selected Item',
           type: matchingOriginalItem?.type || entry.type || 'Shop',
           qty,
@@ -966,7 +960,7 @@ export const InvoicesAndReceipts: React.FC<InvoicesAndReceiptsProps> = ({
   // --- DOCUMENT HISTORY & PAGINATION (unchanged) ---
   const documentArchive: Array<{
     id: string;
-    type: 'Tax Invoice' | 'Receipt' | 'Credit Note' | 'Fuel Delivery' | 'Shift Reconciliation';
+    type: 'Tax Invoice' | 'Receipt' | 'Credit Note' | 'Fuel Delivery';
     docNo: string;
     timestamp: string;
     customer: string;
@@ -1003,18 +997,6 @@ export const InvoicesAndReceipts: React.FC<InvoicesAndReceiptsProps> = ({
       amount: del.totalCost,
       details: del,
     })),
-    ...safeReconciliations.map((rec) => {
-      const shift = safeShifts.find((item) => item.id === rec.shiftId);
-      return {
-        id: rec.id,
-        type: 'Shift Reconciliation' as const,
-        docNo: rec.id.toUpperCase(),
-        timestamp: rec.timestamp,
-        customer: `Staff: ${rec.staffName}`,
-        amount: Number(shift?.totalFuelSales ?? 0) + Number(shift?.totalShopSales ?? 0),
-        details: rec,
-      };
-    }),
   ].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
 
   const filteredTx = safeTransactions.filter((t) => {
@@ -1059,9 +1041,7 @@ export const InvoicesAndReceipts: React.FC<InvoicesAndReceiptsProps> = ({
   });
   const displayedArchive = activeSubTab === 'deliveries'
     ? filteredArchive.filter((doc) => doc.type === 'Fuel Delivery')
-    : activeSubTab === 'reconciliations'
-      ? filteredArchive.filter((doc) => doc.type === 'Shift Reconciliation')
-      : filteredArchive;
+    : filteredArchive;
 
   const filteredCreditNotes = safeCreditNotes.filter((creditNote) => {
     const q = searchTerm.toLowerCase();
@@ -1088,15 +1068,17 @@ export const InvoicesAndReceipts: React.FC<InvoicesAndReceiptsProps> = ({
         <div>
           <h2 className="text-xl font-bold text-slate-100 flex items-center gap-2">
             <Receipt className="w-6 h-6 text-emerald-400" />
-            eTIMS Invoices, Corporate Debt & Document Archive
+            {isCustomersModule ? 'Customers' : 'Invoices & Receipts'}
           </h2>
           <p className="text-xs text-slate-400">
-            Issue KRA eTIMS tax invoices, manage corporate customer credit limits, log repayments, and reprint all official documents.
+            {isCustomersModule
+              ? 'Manage customer profiles, approved credit limits, balances, and repayments.'
+              : 'Issue tax invoices, create credit notes, and reprint official documents.'}
           </p>
         </div>
 
         {/* Sub-tab Navigation */}
-        <div className="flex flex-wrap bg-slate-950 p-1.5 rounded-xl border border-slate-800 text-xs">
+        <div className={(isCustomersModule ? 'hidden ' : '') + 'flex flex-wrap bg-slate-950 p-1.5 rounded-xl border border-slate-800 text-xs'}>
           <button
             onClick={() => setActiveSubTab('invoices')}
             className={`px-3.5 py-2 rounded-lg font-bold transition-all flex items-center gap-1.5 ${
@@ -1107,17 +1089,6 @@ export const InvoicesAndReceipts: React.FC<InvoicesAndReceiptsProps> = ({
           >
             <FileText className="w-3.5 h-3.5" />
             Tax Invoices & Receipts
-          </button>
-          <button
-            onClick={() => setActiveSubTab('customers')}
-            className={`px-3.5 py-2 rounded-lg font-bold transition-all flex items-center gap-1.5 ${
-              activeSubTab === 'customers'
-                ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/20'
-                : 'text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            <Users className="w-3.5 h-3.5" />
-            Corporate Accounts & Debt
           </button>
           <button
             onClick={() => setActiveSubTab('credit-notes')}
@@ -1150,15 +1121,6 @@ export const InvoicesAndReceipts: React.FC<InvoicesAndReceiptsProps> = ({
             <Truck className="w-3.5 h-3.5" />
             Delivery Notes ({safeDeliveries.length})
           </button>
-          <button
-            onClick={() => setActiveSubTab('reconciliations')}
-            className={`px-3.5 py-2 rounded-lg font-bold transition-all flex items-center gap-1.5 ${
-              activeSubTab === 'reconciliations' ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/20' : 'text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            <Scale className="w-3.5 h-3.5" />
-            Shift Reconciliations ({safeReconciliations.length})
-          </button>
         </div>
       </div>
 
@@ -1167,7 +1129,7 @@ export const InvoicesAndReceipts: React.FC<InvoicesAndReceiptsProps> = ({
         <Search className="w-4 h-4 text-slate-400 shrink-0" />
         <input
           type="text"
-          placeholder="Search by Invoice No, Customer Name, KRA PIN, Vehicle Plate, Document No..."
+          placeholder={isCustomersModule ? 'Search customers by name, Tax PIN, phone, or vehicle...' : 'Search by Invoice No, Customer Name, Tax PIN, Vehicle Plate, Document No...'}
           value={searchTerm}
           onChange={(e) => setSearchTerm(e.target.value)}
           className="bg-transparent text-xs text-white placeholder-slate-500 focus:outline-none w-full font-mono"
@@ -1180,12 +1142,9 @@ export const InvoicesAndReceipts: React.FC<InvoicesAndReceiptsProps> = ({
           <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3 pb-3 border-b border-slate-800">
             <h3 className="font-bold text-slate-100 text-base flex items-center gap-2">
               <FileText className="w-5 h-5 text-emerald-400" />
-              eTIMS Tax Invoices & POS Receipts ({filteredTx.length})
+              Tax Invoices & POS Receipts ({filteredTx.length})
             </h3>
             <div className="flex items-center gap-2">
-              <span className="text-xs text-slate-400 font-mono">
-                KRA Standard 16% VAT Tax Compliant
-              </span>
               <button
                 type="button"
                 onClick={() => setActiveSubTab('credit-notes')}
@@ -1222,6 +1181,7 @@ export const InvoicesAndReceipts: React.FC<InvoicesAndReceiptsProps> = ({
                     const docKind = resolveTransactionDocumentKind(tx);
                     const docNumber = docKind === 'Invoice' ? (tx.taxInvoiceNo || 'Inv000') : (tx.receiptNo || 'Rcpt000');
                     const docNumberTone = docKind === 'Invoice' ? 'text-emerald-400' : 'text-blue-400';
+                    const creditSummary = getDocumentCreditSummary(docKind === 'Invoice' ? 'invoice' : 'receipt', docNumber);
 
                     return (
                     <tr key={tx.id} className="hover:bg-slate-800/40 transition-colors">
@@ -1252,7 +1212,7 @@ export const InvoicesAndReceipts: React.FC<InvoicesAndReceiptsProps> = ({
                       </td>
                       <td className="p-3.5 text-right font-sans">
                         <div className="flex justify-end gap-2 ml-auto">
-                          {canCreateCreditNote && (
+                          {canCreateCreditNote && creditSummary.remainingCredit > 0.0001 && (
                             <button
                               onClick={() => openCreditNoteModalForTransaction(tx)}
                               className="px-3 py-1.5 bg-rose-600/15 hover:bg-rose-600 text-rose-300 hover:text-white border border-rose-500/30 font-bold rounded-lg transition-all flex items-center gap-1 text-[11px]"
@@ -1286,17 +1246,17 @@ export const InvoicesAndReceipts: React.FC<InvoicesAndReceiptsProps> = ({
         </div>
       )}
 
-      {/* TAB 2: CORPORATE CUSTOMER ACCOUNTS & DEBT LIMITS */}
+      {/* TAB 2: CUSTOMERS */}
       {activeSubTab === 'customers' && (
         <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-6">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-800">
             <div>
               <h3 className="font-bold text-slate-100 text-base flex items-center gap-2">
                 <Building2 className="w-5 h-5 text-emerald-400" />
-                Corporate Fleet Accounts & Credit Debt Limits
+                Customers
               </h3>
               <p className="text-xs text-slate-400">
-                Set approved credit limits for fleet customers. Sales automatically check outstanding debt before authorizing credit fueling.
+                Manage customer profiles, approved credit limits, and balances. Sales automatically check the available credit balance before authorizing credit fueling.
               </p>
             </div>
 
@@ -1315,7 +1275,7 @@ export const InvoicesAndReceipts: React.FC<InvoicesAndReceiptsProps> = ({
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {filteredCustomers.length === 0 ? (
               <div className="col-span-full p-8 text-center text-slate-500 italic bg-slate-950 rounded-2xl border border-slate-800">
-                No corporate customer accounts found.
+                No customer accounts found.
               </div>
             ) : (
               customerPagination.pageItems.map((cust) => {
@@ -1332,7 +1292,7 @@ export const InvoicesAndReceipts: React.FC<InvoicesAndReceiptsProps> = ({
                         <div>
                           <h4 className="font-bold text-slate-100 text-base">{cust.name}</h4>
                           <span className="text-[11px] text-emerald-400 font-mono font-bold">
-                            KRA PIN: {cust.kraPin}
+                            Tax PIN: {cust.kraPin}
                           </span>
                         </div>
                         <span
@@ -1457,10 +1417,10 @@ export const InvoicesAndReceipts: React.FC<InvoicesAndReceiptsProps> = ({
             <div>
               <h3 className="font-bold text-slate-100 text-base flex items-center gap-2">
                 <ArrowRightLeft className="w-5 h-5 text-emerald-400" />
-                eTIMS Official Credit Notes & Invoice Reversals ({creditNotes.length})
+                Official Credit Notes & Invoice Reversals ({creditNotes.length})
               </h3>
               <p className="text-xs text-slate-400">
-                Official KRA tax adjustments issued to corporate customers for price corrections or returns.
+                Official tax adjustments issued to corporate customers for price corrections or returns.
               </p>
             </div>
 
@@ -1563,16 +1523,16 @@ export const InvoicesAndReceipts: React.FC<InvoicesAndReceiptsProps> = ({
       )}
 
       {/* TAB 4: DOCUMENT HISTORY & REPRINTING */}
-      {(activeSubTab === 'document-history' || activeSubTab === 'deliveries' || activeSubTab === 'reconciliations') && (
+      {(activeSubTab === 'document-history' || activeSubTab === 'deliveries') && (
         <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
           <div className="flex justify-between items-center pb-3 border-b border-slate-800">
             <div>
               <h3 className="font-bold text-slate-100 text-base flex items-center gap-2">
                 <History className="w-5 h-5 text-emerald-400" />
-                {activeSubTab === 'deliveries' ? 'Fuel Delivery Notes' : activeSubTab === 'reconciliations' ? 'Shift Reconciliation Reports' : 'Complete Document History & Instant Reprint Archive'}
+                {activeSubTab === 'deliveries' ? 'Fuel Delivery Notes' : 'Complete Document History & Instant Reprint Archive'}
               </h3>
               <p className="text-xs text-slate-400">
-                {activeSubTab === 'deliveries' ? 'Reprint and download historical fuel delivery receipts.' : activeSubTab === 'reconciliations' ? 'Reprint historical shift reconciliation reports.' : 'Permanent log of all generated Tax Invoices, Receipts, Credit Notes, Tanker Deliveries, and Shift Reconciliations.'}
+                {activeSubTab === 'deliveries' ? 'Reprint and download historical fuel delivery receipts.' : 'Permanent log of all generated Tax Invoices, Receipts, Credit Notes, and Tanker Deliveries.'}
               </p>
             </div>
           </div>
@@ -1608,8 +1568,6 @@ export const InvoicesAndReceipts: React.FC<InvoicesAndReceiptsProps> = ({
                               ? 'bg-rose-500/10 text-rose-400 border border-rose-500/30'
                               : doc.type === 'Fuel Delivery'
                               ? 'bg-blue-500/10 text-blue-400 border border-blue-500/30'
-                              : doc.type === 'Shift Reconciliation'
-                              ? 'bg-purple-500/10 text-purple-400 border border-purple-500/30'
                               : 'bg-slate-800 text-slate-300'
                           }`}
                         >
@@ -1693,7 +1651,7 @@ export const InvoicesAndReceipts: React.FC<InvoicesAndReceiptsProps> = ({
                 </div>
 
                 <div>
-                  <label className="block text-slate-400 mb-1">KRA PIN Number *</label>
+                  <label className="block text-slate-400 mb-1">Tax PIN Number *</label>
                   <input
                     type="text"
                     required
@@ -1805,7 +1763,7 @@ export const InvoicesAndReceipts: React.FC<InvoicesAndReceiptsProps> = ({
 
             <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 text-xs font-mono space-y-1">
               <div className="flex justify-between text-slate-400">
-                <span>KRA PIN:</span>
+                <span>Tax PIN:</span>
                 <span className="text-emerald-400 font-bold">{selectedRepayCust.kraPin}</span>
               </div>
               <div className="flex justify-between text-slate-400">
@@ -1895,7 +1853,7 @@ export const InvoicesAndReceipts: React.FC<InvoicesAndReceiptsProps> = ({
             <div className="flex justify-between items-center pb-3 border-b border-slate-800">
               <h3 className="font-bold text-base text-slate-100 flex items-center gap-2">
                 <ArrowRightLeft className="w-5 h-5 text-emerald-400" />
-                Issue eTIMS Official Credit Note
+                Issue Official Credit Note
               </h3>
               <button onClick={() => setShowCreditNoteModal(false)} className="text-slate-400 hover:text-white">
                 ✕
@@ -1981,7 +1939,7 @@ export const InvoicesAndReceipts: React.FC<InvoicesAndReceiptsProps> = ({
                 </div>
 
                 <div>
-                  <label className="block text-slate-400 mb-1">Customer KRA PIN</label>
+                  <label className="block text-slate-400 mb-1">Customer Tax PIN</label>
                   <input
                     type="text"
                     value={cnCustomerPin}
@@ -2018,6 +1976,12 @@ export const InvoicesAndReceipts: React.FC<InvoicesAndReceiptsProps> = ({
                   </select>
                 </div>
               </div>
+
+              {cnReason === 'RTT' && (
+                <div className="rounded-xl border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-100">
+                  Return to Tank is for fuel only. The credited litres are restored to the tank mapped to the original sale nozzle, subject to the current product mapping and tank capacity.
+                </div>
+              )}
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div>
@@ -2252,13 +2216,13 @@ export const InvoicesAndReceipts: React.FC<InvoicesAndReceiptsProps> = ({
                 )}
                 <div className="border-b border-slate-200 pb-3 text-center">
                   <h3 className="text-base font-extrabold uppercase tracking-tight text-slate-900">
-                    {activeSettings?.stationName || 'DT-FMS PETROLEUM LTD'}
+                    {activeSettings?.stationName || 'DEITAX FMS.A PETROLEUM LTD'}
                   </h3>
                   <p className="mt-1 text-[10px] text-slate-600">
                     {activeSettings?.address || 'Westlands Highway Station #04'} | TEL: {activeSettings?.phone || '+254 (0) 700 123 456'}
                   </p>
                   <p className="text-[10px] text-slate-600">
-                    KRA eTIMS PIN: {activeSettings?.taxPin || 'P051892301A'}
+                    Tax PIN: {activeSettings?.taxPin || 'P051892301A'}
                   </p>
                 </div>
 
@@ -2280,35 +2244,7 @@ export const InvoicesAndReceipts: React.FC<InvoicesAndReceiptsProps> = ({
                 )}
 
                 <div className="mt-3 rounded border border-slate-200 bg-slate-50 p-3 text-[11px]">
-                  {selectedDoc.type === 'Fuel Delivery' ? <FuelDeliveryDocument delivery={selectedDoc.details as FuelDelivery} settings={activeSettings} documentNo={selectedDoc.docNo} /> : selectedDoc.type === 'Shift Reconciliation' ? (() => {
-                    const reconciliation = selectedDoc.details as ThreeWayReconciliation;
-                    const money = (value: unknown) => `KES ${Number(value || 0).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-
-                    return (
-                      <div className="space-y-4 text-slate-800">
-                        <div className="border-b border-slate-200 pb-2 text-center font-bold uppercase text-slate-800">Shift Reconciliation Report</div>
-                        <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-[10px]">
-                          <span>Shift ID</span><span className="text-right font-bold">{reconciliation.shiftId || 'Not recorded'}</span>
-                          <span>Staff</span><span className="text-right font-bold">{reconciliation.staffName || 'Not recorded'}</span>
-                          <span>Expected cash</span><span className="text-right">{money(reconciliation.expectedCash)}</span>
-                          <span>Actual cash count</span><span className="text-right">{money(reconciliation.totalActualCash)}</span>
-                          <span>Cash variance</span><span className="text-right font-bold">{money(reconciliation.cashVariance)}</span>
-                          <span>Approval status</span><span className="text-right font-bold">{reconciliation.status || 'Pending Approval'}</span>
-                        </div>
-                        <div>
-                          <div className="mb-1 font-bold uppercase text-slate-700">Pump / Nozzle Reconciliation</div>
-                          <div className="grid grid-cols-[1.1fr_0.9fr_0.7fr_0.7fr_0.7fr] gap-1 border-y border-slate-300 py-1 text-[8px] font-bold uppercase"><span>Pump / Product</span><span>Opening</span><span className="text-right">Closing</span><span className="text-right">Dispensed</span><span className="text-right">Variance</span></div>
-                          {(reconciliation.pumpReadings || []).map((reading, index) => <div key={`${reading.pumpId}-${index}`} className="grid grid-cols-[1.1fr_0.9fr_0.7fr_0.7fr_0.7fr] gap-1 border-b border-slate-100 py-1 text-[9px]"><span>{reading.pumpName} / {reading.fuelName}</span><span>{Number(reading.openingMeter || 0).toLocaleString()}</span><span className="text-right">{Number(reading.closingMeter || 0).toLocaleString()}</span><span className="text-right">{Number(reading.meterSalesLiters || 0).toLocaleString()} L</span><span className="text-right">{Number(reading.varianceLiters || 0).toLocaleString()} L</span></div>)}
-                        </div>
-                        <div>
-                          <div className="mb-1 font-bold uppercase text-slate-700">Tank Reconciliation</div>
-                          <div className="grid grid-cols-[1fr_0.7fr_0.7fr_0.8fr_0.7fr] gap-1 border-y border-slate-300 py-1 text-[8px] font-bold uppercase"><span>Tank / Product</span><span className="text-right">Opening</span><span className="text-right">Closing</span><span className="text-right">Usage</span><span className="text-right">Variance</span></div>
-                          {(reconciliation.tankDips || []).map((dip, index) => <div key={`${dip.tankId}-${index}`} className="grid grid-cols-[1fr_0.7fr_0.7fr_0.8fr_0.7fr] gap-1 border-b border-slate-100 py-1 text-[9px]"><span>{dip.tankName} / {dip.fuelName}</span><span className="text-right">{Number(dip.openingDip || 0).toLocaleString()}</span><span className="text-right">{Number(dip.closingDip || 0).toLocaleString()}</span><span className="text-right">{Number(dip.calculatedUsage || 0).toLocaleString()} L</span><span className="text-right">{Number(dip.varianceLiters || 0).toLocaleString()} L</span></div>)}
-                        </div>
-                        <div className="border-t border-slate-300 pt-2 text-[10px]"><div className="flex justify-between"><span>3-way pump variance</span><span className="font-bold">{Number(reconciliation.totalPumpVarianceLiters || 0).toLocaleString()} L</span></div><div className="flex justify-between"><span>3-way tank variance</span><span className="font-bold">{Number(reconciliation.totalTankVarianceLiters || 0).toLocaleString()} L</span></div>{reconciliation.managerNotes && <div className="mt-2 border-t border-slate-200 pt-2"><span className="font-bold">Manager remarks: </span>{reconciliation.managerNotes}</div>}</div>
-                      </div>
-                    );
-                  })() : (() => {
+                  {selectedDoc.type === 'Fuel Delivery' ? <FuelDeliveryDocument delivery={selectedDoc.details as FuelDelivery} settings={activeSettings} documentNo={selectedDoc.docNo} /> : (() => {
                     const cn = selectedDoc.details as any;
                     const items = Array.isArray(cn?.items) ? cn.items : [];
                     const subtotal = Number(cn?.subtotal || items.reduce((sum: number, item: any) => sum + Number(item.totalPrice || 0), 0));
@@ -2321,7 +2257,7 @@ export const InvoicesAndReceipts: React.FC<InvoicesAndReceiptsProps> = ({
                         <div className="border-b border-slate-200 pb-2 text-center">
                           <div className="text-[12px] font-extrabold uppercase tracking-wide text-slate-900">{docTypeHeading}</div>
                           <div className="mt-1 text-[10px] text-slate-600">
-                            {(activeSettings?.stationName || 'DT-FMS PETROLEUM LTD').toUpperCase()}
+                            {(activeSettings?.stationName || 'DEITAX FMS.A PETROLEUM LTD').toUpperCase()}
                           </div>
                           <div className="text-[9px] text-slate-600">
                             {(activeSettings?.address || 'Westlands Highway Station #04')}
@@ -2388,9 +2324,9 @@ export const InvoicesAndReceipts: React.FC<InvoicesAndReceiptsProps> = ({
                         </div>
 
                         <div className="mt-3 border-t border-slate-200 pt-2 text-center text-[9px] text-slate-600">
-                          <p>*** eTIMS VERIFIED OFFICIAL DOCUMENT RECORD ***</p>
+                          <p>*** VERIFIED OFFICIAL DOCUMENT RECORD ***</p>
                           <p className="italic">
-                            {activeSettings?.invoiceTerms || 'Thank you for choosing DT-FMS Stations'}
+                            {activeSettings?.invoiceTerms || 'Thank you for choosing DEITAX FMS.A Stations'}
                           </p>
                         </div>
                       </div>

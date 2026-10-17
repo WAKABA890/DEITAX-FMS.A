@@ -84,6 +84,11 @@ html,body,#root{min-height:100%;}html{background:var(--fms-bg);}body{margin:0;ba
 :root[data-fms-mode] main [class*="bg-slate-"]:not(.fms-dialog-overlay){background-color:var(--fms-card)}
 :root[data-fms-mode] [class*="bg-emerald-"]{--legacy-semantic:var(--fms-success)}:root[data-fms-mode] [class*="text-emerald-"]{color:var(--fms-success)!important}:root[data-fms-mode] [class*="text-blue-"],:root[data-fms-mode] [class*="text-sky-"],:root[data-fms-mode] [class*="text-cyan-"]{color:var(--fms-info)!important}:root[data-fms-mode] [class*="text-amber-"]{color:var(--fms-warning)!important}:root[data-fms-mode] [class*="text-rose-"],:root[data-fms-mode] [class*="text-red-"]{color:var(--fms-danger)!important}
 
+/* Dialog overlays keep the current workspace visible while focusing the active form. */
+.fixed.inset-0[class*="bg-slate-950/"],.fixed.inset-0[class*="bg-black/"]{background-color:color-mix(in srgb,var(--fms-overlay) 55%,transparent)!important;backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}
+.fms-dialog-overlay{backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}
+.fms-dialog-backdrop{background-color:color-mix(in srgb,var(--fms-overlay) 55%,transparent)!important;backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}
+
 /* 13. Module helpers */
 .fms-pos-clockin-alert{background:color-mix(in srgb,var(--fms-warning) 16%,var(--fms-card));border:1px solid var(--fms-warning);color:var(--fms-text)}.fms-pos-clockin-alert-icon{background:var(--fms-warning);color:var(--fms-text-inverse)}
 

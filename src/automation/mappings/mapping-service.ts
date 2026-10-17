@@ -76,27 +76,27 @@ export class MappingService {
     const discovered = this.sqlite.prepare(`SELECT * FROM automation_discovered_devices WHERE controller_id=? AND equipment_type=? AND external_parent_id=? AND external_equipment_id=?`).get(input.controllerId,input.equipmentType,parent,input.externalEquipmentId) as any;
     if (!discovered) throw new Error('External device has not been discovered for this controller.');
     const target = this.target(input.equipmentType, input.targetId);
-    if (!target) throw new Error(`DT-FMS ${input.equipmentType.toLowerCase()} does not exist.`);
-    if ((input.equipmentType === 'PUMP' || input.equipmentType === 'NOZZLE') && String(target.status).toUpperCase() !== 'ACTIVE') throw new Error('The selected DT-FMS equipment is disabled or unavailable.');
+    if (!target) throw new Error(`DEITAX FMS.A ${input.equipmentType.toLowerCase()} does not exist.`);
+    if ((input.equipmentType === 'PUMP' || input.equipmentType === 'NOZZLE') && String(target.status).toUpperCase() !== 'ACTIVE') throw new Error('The selected DEITAX FMS.A equipment is disabled or unavailable.');
     const duplicateExternal = this.sqlite.prepare(`SELECT id FROM automation_device_mappings WHERE controller_id=? AND equipment_type=? AND external_parent_id=? AND external_equipment_id=? AND id<>?`).get(input.controllerId,input.equipmentType,parent,input.externalEquipmentId,excludeId || '') as any;
     if (duplicateExternal) throw new Error('This external device already has a mapping.');
     const targetColumn = {PUMP:'pump_id',NOZZLE:'nozzle_id',TANK:'tank_id',PRODUCT:'product_id'}[input.equipmentType];
     const conflict = this.sqlite.prepare(`SELECT id FROM automation_device_mappings WHERE ${targetColumn}=? AND status='MAPPED' AND id<>?`).get(input.targetId,excludeId || '') as any;
-    if (conflict) throw new Error('The selected DT-FMS equipment is already actively mapped.');
+    if (conflict) throw new Error('The selected DEITAX FMS.A equipment is already actively mapped.');
     if (input.equipmentType === 'NOZZLE') {
       if (!parent) throw new Error('External nozzle is missing its external pump relationship.');
       const pumpMapping = this.sqlite.prepare(`SELECT pump_id FROM automation_device_mappings WHERE controller_id=? AND equipment_type='PUMP' AND external_equipment_id=? AND status='MAPPED'`).get(input.controllerId,parent) as any;
       if (!pumpMapping) throw new Error('Map the external parent pump before mapping its nozzle.');
-      if (target.physical_pump_id !== pumpMapping.pump_id) throw new Error('The DT-FMS nozzle does not belong to the mapped physical pump.');
+      if (target.physical_pump_id !== pumpMapping.pump_id) throw new Error('The DEITAX FMS.A nozzle does not belong to the mapped physical pump.');
       if (!this.sqlite.prepare('SELECT 1 FROM fuel_products WHERE id=?').get(target.fuel_product_id)) throw new Error('The nozzle product assignment is missing or invalid.');
       if (discovered.product_external_id) {
         const productMapping = this.sqlite.prepare(`SELECT product_id FROM automation_device_mappings WHERE controller_id=? AND equipment_type='PRODUCT' AND external_equipment_id=? AND status='MAPPED'`).get(input.controllerId,discovered.product_external_id) as any;
-        if (productMapping && productMapping.product_id !== target.fuel_product_id) throw new Error('External and DT-FMS nozzle product assignments conflict.');
+        if (productMapping && productMapping.product_id !== target.fuel_product_id) throw new Error('External and DEITAX FMS.A nozzle product assignments conflict.');
       }
     }
     if (input.equipmentType === 'TANK' && discovered.product_external_id) {
       const productMapping = this.sqlite.prepare(`SELECT product_id FROM automation_device_mappings WHERE controller_id=? AND equipment_type='PRODUCT' AND external_equipment_id=? AND status='MAPPED'`).get(input.controllerId,discovered.product_external_id) as any;
-      if (productMapping && productMapping.product_id !== target.fuel_product_id) throw new Error('External and DT-FMS tank products conflict.');
+      if (productMapping && productMapping.product_id !== target.fuel_product_id) throw new Error('External and DEITAX FMS.A tank products conflict.');
     }
     return { valid: true, controller, discovered, target };
   }

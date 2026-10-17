@@ -173,7 +173,7 @@ const permissionGroups: PermissionGroup[] = [
     actionPermissions: ['MANAGE_CONTROLLERS', 'VIEW_AUTOMATION_LOGS'],
   },
   {
-    tabLabel: '🔗 Automation Device Mappings',
+    tabLabel: '🔗 Device Mappings',
     viewPermission: 'VIEW_DEVICE_MAPPINGS',
     actionPermissions: ['MANAGE_DEVICE_MAPPINGS'],
   },
@@ -977,7 +977,7 @@ export const UserManagement: React.FC<UserManagementProps> = ({
             USER MANAGEMENT
           </p>
           <h2 className="text-2xl font-black text-slate-100">
-            Manage station users, access permissions and account status
+            Users
           </h2>
         </div>
         <div className="flex items-center gap-3">

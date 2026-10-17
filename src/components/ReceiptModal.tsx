@@ -148,7 +148,7 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
     }
   };
 
-  const stationName = settings?.stationName || 'DT-FMS PETROLEUM LTD';
+  const stationName = settings?.stationName || 'DEITAX FMS.A PETROLEUM LTD';
   const stationTagline = settings?.tagline || 'Fueling your journey with confidence';
   const stationAddress = settings?.address || 'Westlands Highway Station #04';
   const stationPhone = settings?.phone || '+254 (0) 700 123 456';
@@ -160,7 +160,7 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
   const showPaybillOnReceipt = settings?.showPaybillOnInvoice ?? true;
   const showTillOnReceipt = settings?.showTillOnInvoice ?? false;
   const hasPaymentOptions = (showPaybillOnReceipt && Boolean(stationPaybill) && Boolean(stationPaybillAccount)) || (showTillOnReceipt && Boolean(stationTill));
-  const invoiceTerms = settings?.invoiceTerms || 'Thank you for fueling with DT-FMS Petroleum! Safe Journey.';
+  const invoiceTerms = settings?.invoiceTerms || 'Thank you for fueling with DEITAX FMS.A Petroleum! Safe Journey.';
   const finalizedDocumentHeading = (() => {
     const kind = (transaction.documentType || (transaction.taxInvoiceNo ? 'Invoice' : 'Receipt')).toLowerCase();
 

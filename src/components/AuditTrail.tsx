@@ -8,6 +8,19 @@ interface AuditTrailProps {
   logs: AuditLog[];
 }
 
+
+const displayAuditDetails = (log: AuditLog) => {
+  const bulkMatch = String(log.action || '').match(/^BULK_APPROVAL_(APPROVED|REJECTED)$/);
+  if (!bulkMatch) return log.details;
+
+  const countMatch = String(log.details || '').match(/(\d+)\s+approval record\(s\)/i);
+  const count = countMatch ? Number(countMatch[1]) : null;
+  const verb = bulkMatch[1].toLowerCase();
+  if (!count || count < 1) return 'Bulk ' + verb + ' approval records.';
+
+  return 'Bulk ' + verb + ' ' + count + ' approval record' + (count === 1 ? '' : 's') + '.';
+};
+
 export const AuditTrail: React.FC<AuditTrailProps> = ({ logs = [] }) => {
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [severityFilter, setSeverityFilter] = useState<string>('All');
@@ -176,7 +189,7 @@ export const AuditTrail: React.FC<AuditTrailProps> = ({ logs = [] }) => {
                   </td>
                   <td className="py-3 px-4 font-bold text-emerald-400 whitespace-nowrap">{log.action}</td>
                   <td className="py-3 px-4 text-slate-400 whitespace-nowrap">{log.module}</td>
-                  <td className="py-3 px-4 text-slate-200 font-sans max-w-md">{log.details}</td>
+                  <td className="py-3 px-4 text-slate-200 font-sans max-w-md">{displayAuditDetails(log)}</td>
                   <td className="py-3 px-4 text-center whitespace-nowrap">
                     <span
                       className={`px-2.5 py-0.5 rounded text-[10px] font-bold ${

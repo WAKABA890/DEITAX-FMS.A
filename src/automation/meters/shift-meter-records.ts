@@ -23,7 +23,11 @@ export function recordMeterReview(db:Database.Database,input:{shiftId:string;use
   const variance=meterRound(input.reported-input.authoritative);if(!hasMeterVariance(variance))return null;
   const varianceId=`variance-${randomUUID()}`;
   db.prepare(`INSERT INTO reading_variances(id,shift_id,reading_type,tank_id,nozzle_id,reported_value,authoritative_value,variance,status,recorded_by,recorded_at) VALUES(?,?,'Nozzle Meter',?,?,?,?,?,'Review Required',?,?)`).run(varianceId,input.shiftId,input.nozzle.tankId,input.nozzle.id,input.reported,input.authoritative,variance,input.userId,input.at);
-  const approval:ManagerApproval={id:`app-${randomUUID()}`,timestamp:input.at,shiftId:input.shiftId,type:input.stage==='Unattended'?'Unattended Sales Variance':'Nozzle Reading Variance',reviewScope:'READING',readingVarianceId:varianceId,requestedBy:input.userName,reason:input.stage==='Unattended'?`Nozzle ${input.nozzle.pumpName}: unattended meter movement ${input.reported.toFixed(3)} L versus captured unattended sales ${input.authoritative.toFixed(3)} L; variance ${variance.toFixed(3)} L.`:`${input.stage} observation for nozzle ${input.nozzle.pumpName}: user recorded ${input.reported.toFixed(3)} L; system/PTS-2 meter ${input.authoritative.toFixed(3)} L; variance ${variance.toFixed(3)} L. Observation retained without changing the physical meter.`,amountOrQty:`${variance.toFixed(3)} L`,status:'Pending'};
+  const nozzleName=String(input.nozzle.pumpName||input.nozzle.nozzleName||input.nozzle.id);
+  const reason=input.stage==='Unattended'
+    ? 'Unattended | '+nozzleName+' | Meter: '+input.reported.toFixed(3)+' L | Sales: '+input.authoritative.toFixed(3)+' L | Variance: '+variance.toFixed(3)+' L'
+    : input.stage+' | '+nozzleName+' | Recorded: '+input.reported.toFixed(3)+' L | PTS-2: '+input.authoritative.toFixed(3)+' L | Variance: '+variance.toFixed(3)+' L';
+  const approval:ManagerApproval={id:'app-'+randomUUID(),timestamp:input.at,shiftId:input.shiftId,type:input.stage==='Unattended'?'Unattended Sales Variance':'Nozzle Reading Variance',reviewScope:'READING',readingVarianceId:varianceId,requestedBy:input.userName,reason,amountOrQty:variance.toFixed(3)+' L',status:'Pending'};
   db.prepare(`INSERT INTO manager_approvals(id,timestamp,shift_id,type,requested_by,reason,amount_or_qty,status,reading_variance_id,review_scope) VALUES(?,?,?,?,?,?,?,'Pending',?,'READING')`).run(approval.id,approval.timestamp,approval.shiftId,approval.type,approval.requestedBy,approval.reason,approval.amountOrQty,varianceId);
   return approval;
 }

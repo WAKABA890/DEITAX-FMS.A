@@ -377,7 +377,7 @@ export const Signup: React.FC<SignupProps> = ({ onSignupSuccess, onBackToLogin, 
 
         {/* Footer */}
         <p className="text-center text-xs text-slate-500 mt-6">
-          © 2026 DEITAX FMS.A. All rights reserved.
+          © 2026 DeitIies Technologies LTD. All rights reserved.
         </p>
       </div>
     </div>

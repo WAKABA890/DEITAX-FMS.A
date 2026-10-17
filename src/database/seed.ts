@@ -1,8 +1,10 @@
+import { backfillPts2FuelSaleStockAudits, ensureTankStockSchema } from '../automation/tank-stock.js';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { getDatabase, getDatabasePath, getSqlite } from './db.js';
 import { validateDatabaseSchema } from './validateSchema.js';
+import { ensureSingleStationInvariant } from './single-station.js';
 import * as schema from './schema.js';
 import {
   INITIAL_USERS,
@@ -418,6 +420,8 @@ function createTables() {
       status TEXT NOT NULL DEFAULT 'Pending',
       manager_id TEXT,
       manager_notes TEXT,
+      reading_variance_id TEXT,
+      review_scope TEXT,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY(shift_id) REFERENCES shifts(id),
@@ -873,7 +877,7 @@ const migrations: DatabaseMigration[] = [
       const supplierNameDuplicates = sqlite.prepare(`SELECT lower(trim(supplier_name)) AS value, COUNT(*) AS count FROM suppliers
         GROUP BY lower(trim(supplier_name)) HAVING COUNT(*) > 1`).all();
       if (customerDuplicates.length || supplierPinDuplicates.length || supplierNameDuplicates.length) {
-        console.warn('Unique indexes were not created because legacy duplicate KRA PINs/names exist. Resolve duplicates without deleting history, then create the indexes manually.');
+        console.warn('Unique indexes were not created because legacy duplicate tax PINs/names exist. Resolve duplicates without deleting history, then create the indexes manually.');
         return;
       }
       sqlite.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_tax_id_unique ON customers(lower(trim(tax_id))) WHERE tax_id IS NOT NULL AND trim(tax_id) <> ''`);
@@ -1222,7 +1226,7 @@ const migrations: DatabaseMigration[] = [
       }
 
       sqlite.exec(`INSERT OR IGNORE INTO custom_roles (id,name,description,status,system_role)
-       SELECT 'role-' || lower(replace(replace(role,' ','-'),'/','-')), role, 'Migrated existing DT-FMS role', 'ACTIVE',
+       SELECT 'role-' || lower(replace(replace(role,' ','-'),'/','-')), role, 'Migrated existing DEITAX FMS.A role', 'ACTIVE',
        CASE WHEN role IN ('Super Admin','Admin') THEN 1 ELSE 0 END FROM users WHERE trim(role) <> ''`);
     },
   },
@@ -1270,9 +1274,9 @@ const migrations: DatabaseMigration[] = [
     run: (sqlite: any) => {
       const definitions = [
         { table:'customers', column:'business_name', index:'idx_customers_name_unique', label:'customer name', where:'' },
-        { table:'customers', column:'tax_id', index:'idx_customers_tax_id_unique', label:'customer KRA PIN', where:`WHERE tax_id IS NOT NULL AND trim(tax_id) <> ''` },
+        { table:'customers', column:'tax_id', index:'idx_customers_tax_id_unique', label:'customer Tax PIN', where:`WHERE tax_id IS NOT NULL AND trim(tax_id) <> ''` },
         { table:'suppliers', column:'supplier_name', index:'idx_suppliers_name_unique', label:'supplier name', where:'' },
-        { table:'suppliers', column:'tax_id', index:'idx_suppliers_tax_id_unique', label:'supplier KRA PIN', where:`WHERE tax_id IS NOT NULL AND trim(tax_id) <> ''` },
+        { table:'suppliers', column:'tax_id', index:'idx_suppliers_tax_id_unique', label:'supplier Tax PIN', where:`WHERE tax_id IS NOT NULL AND trim(tax_id) <> ''` },
       ];
       for(const definition of definitions){
         const duplicate=sqlite.prepare(`SELECT lower(trim(${definition.column})) value,COUNT(*) count FROM ${definition.table} ${definition.where} GROUP BY lower(trim(${definition.column})) HAVING COUNT(*)>1 LIMIT 1`).get();
@@ -1995,6 +1999,8 @@ export function seedDatabase() {
 
     // Create tables first
     createTables();
+    ensureSingleStationInvariant(getSqlite());
+    ensureTankStockSchema(getSqlite());
     console.log('✓ Tables created');
 
     // Clear existing data (in reverse order of dependencies)
@@ -2309,10 +2315,13 @@ export function initializeDatabaseIfNeeded() {
 
   try {
     createTables();
+    ensureSingleStationInvariant(getSqlite());
+    ensureTankStockSchema(getSqlite());
     applyMigrations(getSqlite());
     // Normalize the legacy physical pump/nozzle hierarchy before validating
     // logical references. This migration is idempotent and preserves all rows.
     applyDataMigration(getSqlite(), '012_migrate_legacy_pump_nozzles', migrateLegacyPumpNozzles);
+    backfillPts2FuelSaleStockAudits(getSqlite());
     validateDatabaseSchema(getSqlite());
     enforceOneActiveShiftPerStaff();
 

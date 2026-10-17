@@ -49,7 +49,7 @@ const login = async (identifier: string, pin: string) => {
 
 try {
   await waitForServer();
-  for (const endpoint of ['/audit-logs', '/reading-variances', '/shifts', '/users', '/stock/adjustments']) {
+  for (const endpoint of ['/audit-logs', '/reading-variances', '/shifts', '/users', '/stock/adjustments', '/tanks', '/deliveries']) {
     assert.equal((await request(endpoint)).response.status, 401, `${endpoint} must require authentication.`);
   }
   const bootstrap = await request('/users', {
@@ -100,6 +100,9 @@ try {
   const normalAfterChange=await login('auth-normal','5680');assert.equal(normalAfterChange.body.user.mustChangePassword,false);
   const normalAudit = await request('/audit-logs', {}, normalAfterChange.cookie);
   assert.equal(normalAudit.response.status, 403);
+  for (const endpoint of ['/tanks', '/deliveries']) {
+    assert.equal((await request(endpoint, {}, normalAfterChange.cookie)).response.status, 403, endpoint + ' must require VIEW_PUMPS server-side.');
+  }
 
   const permissions = await request(`/users/${normalLogin.body.user.id}/permissions`, {
     method: 'PUT',

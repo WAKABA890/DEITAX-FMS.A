@@ -1,18 +1,35 @@
-import React from 'react';
-import { Scale, CheckCircle2, AlertTriangle, ShieldAlert, FileText } from 'lucide-react';
+import React, { useState } from 'react';
+import { Scale, ChevronDown } from 'lucide-react';
 import { ShiftSession, ThreeWayReconciliation } from '../types';
 import { PaginationControls, usePagination } from './PaginationControls';
+import { ShiftReconciliationSourceSummary } from './ShiftReconciliationSourceSummary';
 
 interface ReconciliationLedgerProps {
   reconciliations: ThreeWayReconciliation[];
   shifts?: ShiftSession[];
+  selectedShiftId?: string | null;
+  onClearSelectedShift?: () => void;
 }
 
-export const ReconciliationLedger: React.FC<ReconciliationLedgerProps> = ({ reconciliations = [], shifts = [] }) => {
+export const ReconciliationLedger: React.FC<ReconciliationLedgerProps> = ({ reconciliations = [], shifts = [], selectedShiftId, onClearSelectedShift }) => {
+  const [attendant, setAttendant] = useState('');
+  const [date, setDate] = useState('');
+  const [time, setTime] = useState('');
   const safeReconciliations = reconciliations || [];
+  const filteredReconciliations = safeReconciliations.filter((rec) => {
+    if (selectedShiftId && rec.shiftId !== selectedShiftId) return false;
+    const shift = shifts.find((item) => item.id === rec.shiftId);
+    const start = new Date(shift?.startTime || rec.timestamp);
+    const localDate = `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, '0')}-${String(start.getDate()).padStart(2, '0')}`;
+    const localTime = `${String(start.getHours()).padStart(2, '0')}:${String(start.getMinutes()).padStart(2, '0')}`;
+    return `${rec.staffName} ${shift?.staffName || ''}`.toLocaleLowerCase().includes(attendant.trim().toLocaleLowerCase())
+      && (!date || localDate === date) && (!time || localTime === time);
+  });
+  const clearFilters = () => { setAttendant(''); setDate(''); setTime(''); onClearSelectedShift?.(); };
   const reconciliationPagination = usePagination(
-    safeReconciliations,
-    safeReconciliations.map((reconciliation) => reconciliation.id).join('|')
+    filteredReconciliations,
+    JSON.stringify([attendant, date, time, filteredReconciliations.map((rec) => rec.id)]),
+    5
   );
   return (
     <div className="space-y-6 pb-12">
@@ -20,12 +37,31 @@ export const ReconciliationLedger: React.FC<ReconciliationLedgerProps> = ({ reco
       <div className="bg-slate-900 p-6 rounded-2xl border border-slate-800 shadow-xl">
         <h2 className="text-xl font-bold text-slate-100 flex items-center gap-2">
           <Scale className="w-6 h-6 text-emerald-400" />
-          3-Way Cash, Pump & Tank Reconciliation Ledger
+          3-Way Match Ledger
         </h2>
         <p className="text-xs text-slate-400 mt-1">
           Historical record comparing physical drawer cash, dispenser pump meter sales, and underground tank dips.
         </p>
       </div>
+
+      <section className="rounded-2xl border border-slate-800 bg-slate-900 p-5 space-y-3" aria-label="Search shifts">
+        <h3 className="font-semibold text-slate-100">Search shifts</h3>
+        {selectedShiftId && <p className="break-words text-sm text-emerald-300">Viewing shift: {selectedShiftId}. Clear filters to view all shifts.</p>}
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <label className="space-y-2 text-sm text-slate-300">Shift attendant
+            <input type="search" className="fms-input block w-full" placeholder="Search attendant name" value={attendant} onChange={(event) => setAttendant(event.target.value)} />
+          </label>
+          <label className="space-y-2 text-sm text-slate-300">Shift start date
+            <input type="date" className="fms-input block w-full" value={date} onChange={(event) => setDate(event.target.value)} />
+          </label>
+          <label className="space-y-2 text-sm text-slate-300">Shift start time
+            <input type="time" className="fms-input block w-full" value={time} onChange={(event) => setTime(event.target.value)} />
+          </label>
+          <button type="button" className="fms-btn fms-btn-secondary self-end" onClick={clearFilters}>Clear filters</button>
+        </div>
+        <p className="text-xs leading-relaxed text-slate-400">Search by any field or combine them. Date and time use local shift start time (to the minute); older records without a shift use the reconciliation timestamp.</p>
+        <p className="text-sm text-slate-300" role="status">{filteredReconciliations.length} of {safeReconciliations.length} records</p>
+      </section>
 
       {safeReconciliations.length === 0 ? (
         <div className="bg-slate-900 border border-slate-800 rounded-2xl p-12 text-center text-slate-400 space-y-3">
@@ -34,6 +70,10 @@ export const ReconciliationLedger: React.FC<ReconciliationLedgerProps> = ({ reco
           <p className="text-xs text-slate-500">
             Clock out active staff members in the Shift Management tab to run a 3-way reconciliation check.
           </p>
+        </div>
+      ) : filteredReconciliations.length === 0 ? (
+        <div className="rounded-2xl border border-slate-800 bg-slate-900 p-8 text-center text-slate-300">
+          No shifts match your search. Change or clear the filters to view records.
         </div>
       ) : (
         <div className="space-y-4">
@@ -50,9 +90,11 @@ export const ReconciliationLedger: React.FC<ReconciliationLedgerProps> = ({ reco
                   <h3 className="font-bold text-slate-100 text-sm">
                     Reconciliation: {rec.staffName}
                   </h3>
-                  <span className="text-xs text-slate-400">
-                    Timestamp: {new Date(rec.timestamp).toLocaleString()}
-                  </span>
+                  <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-slate-400">
+                    <span>Shift: <span className="font-mono text-slate-300">{rec.shiftId || '—'}</span></span>
+                    <span>Timestamp: {new Date(rec.timestamp).toLocaleString()}</span>
+                    {shift && <><span>Started: {new Date(shift.startTime).toLocaleString()}</span><span>Ended: {shift.endTime ? new Date(shift.endTime).toLocaleString() : 'Not recorded'}</span></>}
+                  </div>
                 </div>
 
                 <span
@@ -83,29 +125,27 @@ export const ReconciliationLedger: React.FC<ReconciliationLedgerProps> = ({ reco
                 <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-1">
                   <span className="text-slate-500 block uppercase font-bold text-[10px]">2. Pump Meter Match</span>
                   <div className="text-slate-300">Pumps Count: {rec.pumpReadings.length}</div>
-                  <div className="text-emerald-400 font-bold pt-1 border-t border-slate-800">
-                    Pump Variance: {rec.totalPumpVarianceLiters.toFixed(1)} L
-                  </div>
+                  <VarianceValue label="Pump variance" value={rec.totalPumpVarianceLiters} />
                 </div>
 
                 {/* Match 3: Tanks */}
                 <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-1">
                   <span className="text-slate-500 block uppercase font-bold text-[10px]">3. Tank Dip Match</span>
                   <div className="text-slate-300">Tanks Checked: {rec.tankDips.length}</div>
-                  <div className="text-emerald-400 font-bold pt-1 border-t border-slate-800">
-                    Tank Dip Variance: {rec.totalTankVarianceLiters.toFixed(1)} L
-                  </div>
+                  <VarianceValue label="Tank dip variance" value={rec.tankDips.length ? rec.totalTankVarianceLiters : null} />
                 </div>
               </div>
-              {shift && <div className="rounded-xl border border-slate-800 bg-slate-950 p-4 text-xs">
-                <h4 className="mb-3 font-bold text-slate-100">Shift snapshot</h4>
-                <div className="grid gap-2 sm:grid-cols-3 text-slate-300"><span>Clock in: {new Date(shift.startTime).toLocaleString()}</span><span>Clock out: {shift.endTime ? new Date(shift.endTime).toLocaleString() : '—'}</span><span>Status: {shift.status} / {shift.approvalStatus || rec.status}</span></div>
-                <div className="mt-4 grid gap-4 lg:grid-cols-2">
-                  <div><h5 className="mb-2 font-semibold text-emerald-300">Actual opening figures</h5><p>Cash in drawer: KES {Number(shift.openingCash || 0).toFixed(2)}</p>{(shift.openingPumpReadings || []).map((reading) => <p key={reading.pumpId}>{reading.pumpName}: {Number(reading.openingMeter).toFixed(3)} L baseline · PTS-2 at clock-in {Number(reading.authoritativeOpeningMeter??reading.openingMeter).toFixed(3)} L · User record {reading.reportedOpeningMeter==null?'—':Number(reading.reportedOpeningMeter).toFixed(3)+' L'} · Unattended {Number(reading.unattendedMeterLiters||0).toFixed(3)} L</p>)}{(shift.openingTankDips || []).map((dip) => <p key={dip.tankId}>{dip.tankName}: {Number(dip.openingDip).toFixed(2)} L</p>)}</div>
-                  <div><h5 className="mb-2 font-semibold text-amber-300">Actual closing figures</h5><p>Physical cash count: KES {Number(shift.actualCashCount ?? rec.totalActualCash).toFixed(2)}</p>{(shift.closingPumpReadings || rec.pumpReadings).map((reading) => <p key={reading.pumpId}>{reading.pumpName}: {Number(reading.closingMeter).toFixed(2)} L (dispensed {Number(reading.meterSalesLiters).toFixed(3)} L; unattended sales {Number(reading.unattendedSalesLiters||0).toFixed(3)} L) · User record {reading.reportedClosingMeter==null?'—':Number(reading.reportedClosingMeter).toFixed(3)+' L'} · Observation variance {Number(reading.reportedVarianceLiters||0).toFixed(3)} L</p>)}{(shift.closingTankDips || rec.tankDips).map((dip) => <p key={dip.tankId}>{dip.tankName}: {Number(dip.closingDip).toFixed(2)} L</p>)}</div>
+              <details open={selectedShiftId === rec.shiftId ? true : undefined} className="group rounded-xl border border-slate-800 bg-slate-950 text-xs">
+                <summary className="flex cursor-pointer list-none items-center justify-between gap-3 p-4 font-bold text-slate-100 [&::-webkit-details-marker]:hidden">
+                  <span>Shift reconciliation source summary</span>
+                  <ChevronDown className="h-4 w-4 shrink-0 text-slate-400 transition-transform group-open:rotate-180" />
+                </summary>
+                <div className="border-t border-slate-800 p-4">
+                  {shift && <div className="mb-4 grid gap-2 sm:grid-cols-3 text-slate-300"><span>Clock in: {new Date(shift.startTime).toLocaleString()}</span><span>Clock out: {shift.endTime ? new Date(shift.endTime).toLocaleString() : '—'}</span><span>Status: {shift.status} / {shift.approvalStatus || rec.status}</span></div>}
+                  <ShiftReconciliationSourceSummary reconciliation={rec} shift={shift} />
+                  {rec.managerNotes && <div className="mt-3 border-t border-slate-800 pt-3 text-sm leading-relaxed text-slate-300"><h4 className="mb-2 font-semibold">Manager review</h4><p className="whitespace-pre-wrap break-words">{rec.managerNotes}</p></div>}
                 </div>
-                {rec.managerNotes && <p className="mt-3 border-t border-slate-800 pt-3 text-slate-300">Manager review: {rec.managerNotes}</p>}
-              </div>}
+              </details>
             </div>
               );
             })()
@@ -113,11 +153,22 @@ export const ReconciliationLedger: React.FC<ReconciliationLedgerProps> = ({ reco
           <PaginationControls
             currentPage={reconciliationPagination.currentPage}
             totalPages={reconciliationPagination.totalPages}
-            itemCount={safeReconciliations.length}
+            itemCount={filteredReconciliations.length}
+            pageSize={5}
             onPageChange={reconciliationPagination.setCurrentPage}
           />
         </div>
       )}
     </div>
   );
+};
+
+const VarianceValue = ({ label, value }: { label: string; value: number | null }) => {
+  const missing = value == null || !Number.isFinite(value);
+  const differs = !missing && Math.abs(value) >= 0.0005;
+  return <div className={`border-t border-slate-800 pt-2 leading-relaxed ${missing ? 'text-amber-300' : differs ? 'text-rose-400' : 'text-emerald-400'}`}>
+    <div className="font-semibold">{label}</div>
+    <div className="mt-1 font-bold">{missing ? 'Incomplete — missing reading' : `${value > 0 ? '+' : ''}${value.toLocaleString('en-KE', { minimumFractionDigits: 3, maximumFractionDigits: 3 })} L`}</div>
+    <div className="mt-1 font-sans">{missing ? 'Review the source summary for missing records.' : differs ? 'Variance recorded' : 'No variance'}</div>
+  </div>;
 };

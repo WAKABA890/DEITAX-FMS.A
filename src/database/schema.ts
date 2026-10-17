@@ -545,6 +545,8 @@ export const managerApprovals = sqliteTable('manager_approvals', {
   status: text('status').notNull().default('Pending'),
   managerId: text('manager_id').references(() => users.id),
   managerNotes: text('manager_notes'),
+  readingVarianceId: text('reading_variance_id').references(() => readingVariances.id),
+  reviewScope: text('review_scope'),
   createdAt: text('created_at').default(sql`CURRENT_TIMESTAMP`),
   updatedAt: text('updated_at').default(sql`CURRENT_TIMESTAMP`),
 });

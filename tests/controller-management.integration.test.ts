@@ -208,6 +208,8 @@ test('migration 024 upgrades a Phase 1 controller record without data loss', asy
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY(station_id) REFERENCES station_settings(id)
       );
+      INSERT INTO automation_controllers_phase1(id,station_id,name,adapter_type,host,port,connection_type,credential_ref,configuration_json,status,enabled,last_communication_at,firmware_version,created_at,updated_at)
+        SELECT id,station_id,name,adapter_type,host,port,connection_type,credential_ref,configuration_json,status,enabled,last_communication_at,firmware_version,created_at,updated_at FROM automation_controllers;
       INSERT INTO automation_controllers_phase1 (
         id, station_id, name, adapter_type, connection_type, configuration_json, status, enabled
       ) VALUES ('phase1-controller', 'station-1', 'Preserved Phase 1', 'SIMULATOR', 'SIMULATOR', '{"simulatorMode":"SUCCESS"}', 'DISABLED', 0);

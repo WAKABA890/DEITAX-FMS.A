@@ -1,8 +1,0 @@
-{
-  "name": "DEITAX FMS.A",
-  "description": "Comprehensive petrol station operational management platform featuring live tank \u0026 pump monitoring, multi-role POS, 3-way shift reconciliation, eTIMS tax compliance, and audit tracking.",
-  "requestFramePermissions": [],
-  "majorCapabilities": [
-    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
-  ]
-}

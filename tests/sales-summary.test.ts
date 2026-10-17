@@ -66,6 +66,27 @@ test('mixed baskets are split by line item and reconcile to their transaction to
   assert.equal(summary.totalSales, 150);
 });
 
+test('issued credit notes reduce real-time sales by their fuel and shop values', () => {
+  const dashboard = buildDashboardSalesSummary(
+    [
+      transaction({ id: 'fuel-sale', type: 'Fuel', totalAmount: 100, items: [{ type: 'Fuel', qty: 1, unitPrice: 100, totalPrice: 100 }] }),
+      transaction({ id: 'shop-sale', type: 'Shop', totalAmount: 200, items: [{ type: 'Shop', qty: 2, unitPrice: 100, totalPrice: 200 }] }),
+    ],
+    [],
+    now,
+    [
+      { id: 'fuel-credit', creditNoteNo: 'Cn-1', timestamp: '2026-08-20T07:30:00.000Z', customerName: 'Walk-in', originalInvoiceNo: '', items: [{ itemId: 'fuel', name: 'Fuel', type: 'Fuel', qty: 1, quantity: 1, unitPrice: 40, totalPrice: 40, taxAmount: 0 }], subtotal: 40, taxAmount: 0, totalAmount: 40, reason: 'RTT', issuedBy: 'Manager', status: 'Issued' },
+      { id: 'shop-credit', creditNoteNo: 'Cn-2', timestamp: '2026-08-20T07:45:00.000Z', customerName: 'Walk-in', originalInvoiceNo: '', items: [{ itemId: 'shop', name: 'Shop', type: 'Shop', qty: 1, quantity: 1, unitPrice: 50, totalPrice: 50, taxAmount: 0 }], subtotal: 50, taxAmount: 0, totalAmount: 50, reason: 'Return', issuedBy: 'Manager', status: 'Issued' },
+      { id: 'voided-credit', creditNoteNo: 'Cn-3', timestamp: '2026-08-20T08:00:00.000Z', customerName: 'Walk-in', originalInvoiceNo: '', items: [{ itemId: 'shop', name: 'Shop', type: 'Shop', qty: 1, quantity: 1, unitPrice: 30, totalPrice: 30, taxAmount: 0 }], subtotal: 30, taxAmount: 0, totalAmount: 30, reason: 'Return', issuedBy: 'Manager', status: 'Voided' },
+    ] as any
+  );
+
+  assert.equal(dashboard.today.transactionCount, 2);
+  assert.equal(dashboard.today.fuelRevenue, 60);
+  assert.equal(dashboard.today.shopRevenue, 150);
+  assert.equal(dashboard.today.totalSales, 210);
+  assert.equal(dashboard.today.fuelRevenue + dashboard.today.shopRevenue + dashboard.today.otherRevenue, 210);
+});
 test('today includes completed closed-shift sales while the active roster is deduplicated', () => {
   const dashboard = buildDashboardSalesSummary(
     [

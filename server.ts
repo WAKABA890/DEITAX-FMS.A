@@ -1,3 +1,5 @@
+import { recordManualTankDip } from './src/automation/tank-stock.js';
+import { nextDocumentSequence } from './src/utils/document-sequence.ts';
 import { previousNozzleClosings, recordMeterReview } from './src/automation/meters/shift-meter-records.ts';
 import { buildOpeningNozzleReadings, buildClosingNozzleReadings, hasMeterVariance } from './src/utils/shift-meter-readings.ts';
 import express from 'express';
@@ -72,6 +74,7 @@ import { createAlertRouter } from './src/automation/api/alert-router.ts';
 import { RecoveryCoordinator } from './src/automation/recovery/recovery-coordinator.ts';
 import { createRecoveryRouter } from './src/automation/api/recovery-router.ts';
 import { createPts2PriceRouter } from './src/automation/api/pts2-price-router.ts';
+import { createApprovalRouter } from './src/server/modules/approvals/approval-router.ts';
 
 const VITE_HMR_PORT = 5173;
 
@@ -350,6 +353,7 @@ export async function startServer(
   });
 
   let tanks: FuelTank[] = (allData.tanks as FuelTank[]) ?? [];
+  app.use('/api',(_req,_res,next)=>{tanks=db.tankQueries.all() as FuelTank[];next();});
   let pumps: PumpNozzle[] = (allData.pumps as PumpNozzle[]) ?? [];
   let shopItems: ShopItem[] = (allData.shopItems as ShopItem[]) ?? [];
   const parseReadingList = (value: unknown) => {
@@ -477,7 +481,7 @@ export async function startServer(
       totalActualCash: Number(record?.cashActual ?? record?.cash_actual ?? 0),
       cashVariance: Number(record?.cashVariance ?? record?.cash_variance ?? 0),
       pumpReadings: details.pumpReadings ?? [],
-      totalPumpVarianceLiters: Number(record?.pumpVariance ?? record?.pump_variance ?? 0),
+      totalPumpVarianceLiters: record?.pumpVariance ?? record?.pump_variance ?? null,
       tankDips: details.tankDips ?? [],
       totalTankVarianceLiters: Number(record?.tankVariance ?? record?.tank_variance ?? 0),
       status: record?.status ?? 'Pending Approval',
@@ -664,17 +668,15 @@ export async function startServer(
   let reconciliations: ThreeWayReconciliation[] = ((allData.reconciliations as any[]) ?? []).map(normalizeStoredReconciliation);
   let deliveries: FuelDelivery[] = ((allData.deliveries as any[]) ?? []).map(normalizeStoredDelivery);
 
-  let approvals: ManagerApproval[] = (allData.approvals as ManagerApproval[]) ?? [];
-  try {
-    const sqlite = getSqlite();
-    const storedApprovals = sqlite.prepare('SELECT * FROM manager_approvals ORDER BY created_at DESC').all() as any[];
-    if (storedApprovals.length > 0) {
-      approvals = storedApprovals.map((row: any) => ({
-        id: row.id,
-        timestamp: row.timestamp,
+  const readPersistedManagerApprovals = (): ManagerApproval[] => {
+    try {
+      const rows = getSqlite().prepare('SELECT * FROM manager_approvals ORDER BY created_at DESC, id DESC').all() as any[];
+      return rows.map((row: any) => ({
+        id: String(row.id),
+        timestamp: String(row.timestamp),
         shiftId: row.shift_id ?? undefined,
-        readingVarianceId:row.reading_variance_id??undefined,
-        reviewScope:row.review_scope??undefined,
+        readingVarianceId: row.reading_variance_id ?? undefined,
+        reviewScope: row.review_scope === 'SHIFT' || row.review_scope === 'READING' ? row.review_scope : undefined,
         type: row.type,
         requestedBy: row.requested_by,
         reason: row.reason,
@@ -683,14 +685,18 @@ export async function startServer(
         managerId: row.manager_id ?? undefined,
         managerNotes: row.manager_notes ?? undefined,
       })) as ManagerApproval[];
+    } catch {
+      return [];
     }
-  } catch (error) {
-    // Table might not exist yet; ignore
-  }
+  };
+
+  // Manager Approvals always come from the dedicated persisted table. The generic
+  // approvals table is used by unrelated workflows and must not feed this tab.
+  let approvals: ManagerApproval[] = readPersistedManagerApprovals();
 
   let auditLogs: AuditLog[] = (allData.auditLogs as AuditLog[]) ?? [];
   const normalizeStationSettings = (value: Partial<StationSettings> | null | undefined): StationSettings => ({
-    stationName: String(value?.stationName ?? 'DT-FMS Station'),
+    stationName: String(value?.stationName ?? 'DEITAX FMS.A Station'),
     tagline: String(value?.tagline ?? ''),
     taxPin: String(value?.taxPin ?? ''),
     address: String(value?.address ?? ''),
@@ -733,32 +739,7 @@ export async function startServer(
 
   const addAuditLog = db.addAuditLog;
 
-  const getNextDocumentSequence = (documentType: 'invoice' | 'receipt' | 'credit-note') => {
-    const sqlite = getSqlite();
-    const year = new Date().getFullYear();
-    const existing = sqlite.prepare('SELECT last_number, updated_at FROM document_counters WHERE document_type = ?').get(documentType) as { last_number: number; updated_at: string } | undefined;
-    const lastYear = existing?.updated_at ? new Date(existing.updated_at).getFullYear() : null;
-    const nextNumber = Number(existing?.last_number ?? 0) + 1;
-
-    if (!existing || lastYear !== year) {
-      sqlite.prepare(`
-        INSERT INTO document_counters (document_type, last_number, updated_at)
-        VALUES (?, ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(document_type)
-        DO UPDATE SET last_number = excluded.last_number, updated_at = CURRENT_TIMESTAMP
-      `).run(documentType, 1);
-      return 1;
-    }
-
-    sqlite.prepare(`
-      INSERT INTO document_counters (document_type, last_number, updated_at)
-      VALUES (?, ?, CURRENT_TIMESTAMP)
-      ON CONFLICT(document_type)
-      DO UPDATE SET last_number = excluded.last_number, updated_at = CURRENT_TIMESTAMP
-    `).run(documentType, nextNumber);
-
-    return nextNumber;
-  };
+  const getNextDocumentSequence = (kind: 'invoice' | 'receipt' | 'credit-note') => nextDocumentSequence(getSqlite(),kind);
 
   const generateInvoiceNumber = () => {
     const seq = getNextDocumentSequence('invoice');
@@ -885,7 +866,7 @@ export async function startServer(
     req.authUser = authenticatedUser;
 
     if (authenticatedUser.mustChangePassword && !['/auth/change-pin','/auth/logout','/auth/me'].includes(req.path)) {
-      return res.status(403).json({ success:false, code:'PASSWORD_CHANGE_REQUIRED', message:'You must set a new personal PIN before accessing DT-FMS.' });
+      return res.status(403).json({ success:false, code:'PASSWORD_CHANGE_REQUIRED', message:'You must set a new personal PIN before accessing DEITAX FMS.A.' });
     }
 
     if (req.body && typeof req.body === 'object') {
@@ -923,10 +904,10 @@ export async function startServer(
   // --- API ROUTES ---
 
   app.get('/api/status', (req, res) => {
-    const dashboardSummary = buildDashboardSalesSummary(transactions, shifts);
+    const dashboardSummary = buildDashboardSalesSummary(transactions, shifts, new Date(), creditNotes);
     res.json({
       status: 'online',
-      system: 'DT-FMS (Fuel Management System)',
+      system: 'DEITAX FMS.A (Fuel Management System)',
       activeShiftsCount: dashboardSummary.activeStaff.count,
       pendingApprovalsCount: approvals.filter((a) => a.status === 'Pending').length,
       totalSalesToday: dashboardSummary.today.totalSales,
@@ -939,7 +920,7 @@ export async function startServer(
 
   app.get('/api/dashboard-summary', (req, res) => {
     transactions = (db.transactionQueries.all() as any[]).map(normalizeStoredTransaction);
-    res.json(buildDashboardSalesSummary(transactions, shifts));
+    res.json(buildDashboardSalesSummary(transactions, shifts, new Date(), creditNotes));
   });
   app.get('/api/auth/me', (req: any, res) => {
     try {
@@ -1165,7 +1146,7 @@ export async function startServer(
 
       try {
         db.userQueries.create(newUser as any);
-        const addInitialRole=getSqlite().prepare(`INSERT OR IGNORE INTO custom_roles(id,name,description,status,system_role,created_by) VALUES(?,?,'Initial DT-FMS role','ACTIVE',?,?)`);
+        const addInitialRole=getSqlite().prepare(`INSERT OR IGNORE INTO custom_roles(id,name,description,status,system_role,created_by) VALUES(?,?,'Initial DEITAX FMS.A role','ACTIVE',?,?)`);
         ['Super Admin','Admin','Station Manager','Auditor','Fuel Attendant','Shop Attendant','Cashier','Normal User','Standard User'].forEach(name=>addInitialRole.run(`role-${name.toLowerCase().replace(/\s+/g,'-')}`,name,['Super Admin','Admin'].includes(name)?1:0,newUser.id));
       } catch (error) {
         console.error('Error saving user to database:', error);
@@ -1318,7 +1299,29 @@ export async function startServer(
 
   // Tanks & Dip Readings
   app.get('/api/tanks', (req, res) => {
-    res.json(tanks);
+    const denied = requirePermission(req, res, 'VIEW_PUMPS', 'view tanks');
+    if (denied) return denied;
+    const sqlite = getSqlite();
+    const latestDip = sqlite.prepare('SELECT volume_liters,variance_liters FROM manual_tank_dips WHERE tank_id=? ORDER BY datetime(occurred_at) DESC,id DESC LIMIT 1');
+    const latestStockMovement = sqlite.prepare('SELECT movement_type,quantity,before_balance,after_balance,source,reference,occurred_at FROM tank_stock_ledger WHERE tank_id=? ORDER BY datetime(occurred_at) DESC,datetime(recorded_at) DESC,id DESC LIMIT 1');
+    res.json(db.tankQueries.all().map((tank) => {
+      const dip = latestDip.get(tank.id) as any;
+      const movement = latestStockMovement.get(tank.id) as any;
+      return {
+        ...tank,
+        manualDipVolume: dip?.volume_liters ?? null,
+        manualDipVariance: dip?.variance_liters ?? null,
+        latestStockMovement: movement ? {
+          movementType: String(movement.movement_type),
+          quantityLiters: Number(movement.quantity),
+          beforeBalance: Number(movement.before_balance),
+          afterBalance: Number(movement.after_balance),
+          source: String(movement.source),
+          reference: movement.reference == null ? null : String(movement.reference),
+          occurredAt: String(movement.occurred_at),
+        } : null,
+      };
+    }));
   });
 
   app.post('/api/tanks', (req, res) => {
@@ -1386,9 +1389,9 @@ export async function startServer(
       fuelProductId: prod.id,
       fuelName: prod.name,
       capacityLiters: Number(capacityLiters || 30000),
-      currentLevelLiters: Number(currentLevelLiters || 10000),
+      currentLevelLiters: Number(currentLevelLiters ?? 0),
       reorderLevelLiters: Number(reorderLevelLiters || 5000),
-      lastDipReading: Number(currentLevelLiters || 10000),
+      lastDipReading: Number(currentLevelLiters ?? 0),
       lastDipTime: new Date().toISOString(),
     };
 
@@ -1446,42 +1449,33 @@ export async function startServer(
     res.json({ success: true, deletedTank: tank, deletedPumps: relatedPumps });
   });
 
-  app.post('/api/tanks/dip', (req: any, res) => {
-    const { tankId, dipReadingLiters } = req.body;
-    if (!req.authUser) return res.status(401).json({ message: 'Authentication is required to record a tank dip.' });
-    const tank = tanks.find((t) => t.id === tankId);
-    if (!tank) return res.status(404).json({ message: 'Tank not found' });
-    const activeShift = db.shiftQueries.active().find((shift: any) => shift.staffId === req.authUser.id);
-    if (!activeShift) return res.status(409).json({ message: 'An active shift is required to record a tank dip observation.' });
-    const reportedValue = Number(dipReadingLiters);
-    if (!Number.isFinite(reportedValue) || reportedValue < 0) return res.status(400).json({ message: 'Dip reading must be a non-negative number.' });
-    const authoritativeValue = Number(tank.currentLevelLiters ?? 0);
-    const variance = reportedValue - authoritativeValue;
-    const recordedAt = new Date().toISOString();
-    let varianceId: string | null = null;
-    if (Math.abs(variance) > 0.000001) {
-      varianceId = `variance-${randomUUID()}`;
-      getSqlite().prepare(`INSERT INTO reading_variances
-        (id, shift_id, reading_type, tank_id, nozzle_id, reported_value, authoritative_value, variance, status, recorded_by, recorded_at)
-        VALUES (?, ?, 'Tank Dip', ?, NULL, ?, ?, ?, 'Review Required', ?, ?)`)
-        .run(varianceId, activeShift.id, tankId, reportedValue, authoritativeValue, variance, req.authUser.id, recordedAt);
-    }
-
-    addAuditLog(
-      req.authUser.id,
-      req.authUser.name,
-      req.authUser.role,
-      'DIP_READING_RECORDED',
-      'Tanks',
-      `Shift ${activeShift.id}, tank ${tank.id}: reported ${reportedValue} L, authoritative ${authoritativeValue} L, variance ${variance} L. No inventory adjustment was made.`
-    );
-    if (varianceId) addAuditLog(req.authUser.id, req.authUser.name, req.authUser.role, 'DIP_VARIANCE_DETECTED', 'Tanks', `Shift ${activeShift.id}, tank ${tank.id}: variance ${variance} L.`, 'Warning');
-
-    res.json({ ...tank, observation: { shiftId: activeShift.id, reportedValue, authoritativeValue, variance, recordedAt }, varianceId });
+  app.get('/api/tanks/evidence', (req:any,res)=>{
+    const denied=requirePermission(req,res,'VIEW_PUMPS','Tank evidence');if(denied)return denied;
+    const page=Math.max(1,Number(req.query.page)||1),limit=25,offset=(page-1)*limit;
+    res.json({tanks:db.tankQueries.all().map(t=>({...t,latestManualDip:getSqlite().prepare('SELECT * FROM manual_tank_dips WHERE tank_id=? ORDER BY occurred_at DESC,id DESC LIMIT 1').get(t.id)||null})),dips:getSqlite().prepare('SELECT d.*,t.tank_name FROM manual_tank_dips d JOIN fuel_tanks t ON t.id=d.tank_id ORDER BY d.recorded_at DESC,d.id DESC LIMIT ? OFFSET ?').all(limit,offset),movements:getSqlite().prepare('SELECT l.*,t.tank_name FROM tank_stock_ledger l JOIN fuel_tanks t ON t.id=l.tank_id ORDER BY l.recorded_at DESC,l.id DESC LIMIT ? OFFSET ?').all(limit,offset),page});
+  });
+  app.post('/api/tanks/dip', (req:any,res)=>{
+    const denied=requirePermission(req,res,'ADJUST_STOCK','Manual tank dip');if(denied)return denied;
+    const initialSetup=req.body.initialSetup===true||String(req.body.mode||'').toUpperCase()==='INITIAL';
+    if(initialSetup&&!isAdminRole(req.authUser.role))return res.status(403).json({message:'Only an Admin or Super Admin can set the initial tank stock.'});
+    if(req.body.dipValue==null&&req.body.dipReadingLiters==null)return res.status(400).json({message:'A physical dip reading is required.'});
+    const activeShift=db.shiftQueries.active().find((shift:any)=>shift.staffId===req.authUser.id);
+    const station=getSqlite().prepare('SELECT id FROM station_settings LIMIT 1').get() as any;
+    try{
+      const observation=getSqlite().transaction(()=>{
+        const result=recordManualTankDip(getSqlite(),{tankId:String(req.body.tankId||''),dipValue:Number(req.body.dipValue??req.body.dipReadingLiters),dipUnit:String(req.body.dipUnit||'L').toUpperCase(),volumeLiters:Number(req.body.volumeLiters??req.body.dipReadingLiters),occurredAt:req.body.readingAt||new Date().toISOString(),actorId:req.authUser.id,stationId:station?.id,shiftId:activeShift?.id,reason:String(req.body.reason||'Manual dip observation'),reference:req.body.reference,setInitialStock:initialSetup});
+        addAuditLog(req.authUser.id,req.authUser.name,req.authUser.role,'DIP_READING_RECORDED','Tanks',JSON.stringify(result));
+        if(Math.abs(result.variance)>0.0005&&activeShift)getSqlite().prepare("INSERT INTO reading_variances(id,shift_id,reading_type,tank_id,reported_value,authoritative_value,variance,status,recorded_by,recorded_at) VALUES(?,?,'Tank Dip',?,?,?,?,'Review Required',?,?)").run(result.id,activeShift.id,result.tankId,result.reportedValue,result.authoritativeValue,result.variance,req.authUser.id,result.recordedAt);
+        return result;
+      })();
+      res.json({...db.tankQueries.byId(observation.tankId),observation});
+    }catch(error){res.status(400).json({message:error instanceof Error?error.message:'Unable to record dip.'});}
   });
 
   // Fuel Deliveries
   app.get('/api/deliveries', (req, res) => {
+    const denied = requirePermission(req, res, 'VIEW_PUMPS', 'view fuel deliveries');
+    if (denied) return denied;
     res.json(deliveries);
   });
 
@@ -1610,51 +1604,11 @@ export async function startServer(
       }
     }
 
-    const validUserId = userId && users.some((user) => user.id === userId) ? userId : users[0]?.id || 'sys';
-    const openingLevel = tank.currentLevelLiters;
-    const closingLevel = openingLevel + liters;
-    tank.currentLevelLiters = closingLevel;
-    tank.lastDipReading = closingLevel;
-    tank.lastDipTime = new Date().toISOString();
-
-    try {
-      db.tankQueries.update(tank.id, {
-        currentLevelLiters: tank.currentLevelLiters,
-        lastDipReading: tank.lastDipReading,
-        lastDipTime: tank.lastDipTime,
-      } as any);
-    } catch (error) {
-      console.error('Error saving delivered tank level to database:', error);
-      return res.status(500).json({ message: 'Delivery could not update the tank inventory.' });
-    }
-
-    createStockAdjustmentRecord({
-      type: 'Fuel',
-      itemId: tank.id,
-      itemName: tank.tankName,
-      itemCode: productMatch?.code || tank.fuelProductId,
-      previousQty: openingLevel,
-      newQty: closingLevel,
-      reason: 'Fuel Delivery',
-      userId: validUserId,
-      userName: receivedBy || 'Station Staff',
-      userRole: userRole || 'Station Manager',
-      source: 'Pumps & Tanks',
-      referenceNumber: String(deliveryNoteNo).trim(),
-      originalDocumentNumber: String(deliveryNoteNo).trim(),
-      movementType: 'FUEL DELIVERY',
-      notes: `Fuel delivery received for ${tank.tankName}. Supplier: ${verifiedSupplierName}. Quantity added: ${liters} L.`,
-    });
+    const validUserId = (req as any).authUser.id;
+    const openingLevel = Number(db.tankQueries.byId(tank.id)?.currentLevelLiters);
+    const closingLevel = Number((openingLevel + liters).toFixed(3));
 
     const totalCost = liters * unitPrice;
-    supplierMatch.currentBalance = getSupplierOutstandingBalance(supplierMatch.id) + totalCost;
-    try {
-      db.supplierQueries.update(supplierMatch.id, {
-        accountBalance: supplierMatch.currentBalance,
-      } as any);
-    } catch (error) {
-      console.error('Error updating supplier outstanding balance after delivery:', error);
-    }
     const newDelivery: FuelDelivery = {
       id: 'del-' + Date.now(),
       timestamp: new Date().toISOString(),
@@ -1672,9 +1626,8 @@ export async function startServer(
       receivedBy: receivedBy || 'Station Staff',
     };
 
-    deliveries.unshift(newDelivery);
-
     try {
+      getSqlite().transaction(()=>{
       db.deliveryQueries.create({
         id: newDelivery.id,
         supplierId: verifiedSupplierId,
@@ -1697,6 +1650,31 @@ export async function startServer(
         status: 'Completed',
         notes: `Delivery recorded for ${tank.tankName}`,
       } as any);
+        db.tankQueries.update(tank.id,{currentLevelLiters:closingLevel});
+        db.supplierQueries.update(supplierMatch.id,{accountBalance:getSupplierOutstandingBalance(supplierMatch.id)+totalCost} as any);
+        getSqlite().prepare("INSERT INTO tank_stock_ledger(id,tank_id,product_id,movement_type,quantity,before_balance,after_balance,source,reference,actor_id,delivery_id,occurred_at) VALUES(?,?,?,'FUEL_DELIVERY',?,?,?,'FMS_DELIVERY',?,?,?,?)").run('delivery:'+newDelivery.id,tank.id,tank.fuelProductId,liters,openingLevel,closingLevel,newDelivery.deliveryNoteNo,validUserId,newDelivery.id,newDelivery.timestamp);
+        createStockAdjustmentRecord({
+      type: 'Fuel',
+      itemId: tank.id,
+      itemName: tank.tankName,
+      itemCode: productMatch?.code || tank.fuelProductId,
+      previousQty: openingLevel,
+      newQty: closingLevel,
+      reason: 'Fuel Delivery',
+      userId: validUserId,
+      userName: receivedBy || 'Station Staff',
+      userRole: userRole || 'Station Manager',
+      source: 'Pumps & Tanks',
+      referenceNumber: String(deliveryNoteNo).trim(),
+      originalDocumentNumber: String(deliveryNoteNo).trim(),
+      movementType: 'FUEL DELIVERY',
+      notes: `Fuel delivery received for ${tank.tankName}. Supplier: ${verifiedSupplierName}. Quantity added: ${liters} L.`,
+    });
+      })();
+      tank.currentLevelLiters=closingLevel;
+      deliveries.unshift(newDelivery);
+      supplierMatch.currentBalance=getSupplierOutstandingBalance(supplierMatch.id);
+
     } catch (error) {
       console.error('Error saving fuel delivery to database:', error);
       return res.status(500).json({ message: 'Delivery could not be saved to the database.' });
@@ -1728,7 +1706,13 @@ export async function startServer(
     // Return physical readings projected asynchronously from controller snapshots.
     pumps = (db.pumpQueries.all() as PumpNozzle[]) ?? [];
     const hardware=pts2NozzleIds(),previous=previousNozzleClosings(getSqlite());
-    res.json(pumps.map(pump=>({...pump,meterSource:hardware.has(pump.id)?'PTS2':'MANUAL',previousClosingMeter:previous.get(pump.id)?.meter,previousShiftEnd:previous.get(pump.id)?.endTime})));
+    res.json(pumps.map(pump=>{
+      const common={...pump,meterSource:hardware.has(pump.id)?'PTS2':'MANUAL',previousClosingMeter:previous.get(pump.id)?.meter,previousShiftEnd:previous.get(pump.id)?.endTime};
+      if(!hardware.has(pump.id))return common;
+      const state=getSqlite().prepare(`SELECT s.*,c.status controller_status FROM automation_device_mappings m JOIN automation_controllers c ON c.id=m.controller_id LEFT JOIN automation_meter_current_state s ON s.controller_id=m.controller_id AND s.external_parent_id=m.external_parent_id AND s.external_device_id=m.external_equipment_id AND s.nozzle_id=m.nozzle_id WHERE m.nozzle_id=? AND m.status='MAPPED' AND c.adapter_type='PTS2'`).get(pump.id) as any;
+      const reset=state?.controller_id?getSqlite().prepare("SELECT MAX(source_occurred_at) at FROM automation_meter_readings WHERE controller_id=? AND nozzle_id=? AND anomaly_classification IN('METER_RESET','METER_DECREASE')").get(state.controller_id,pump.id) as any:null;
+      return {...common,currentMeterReading:state?.current_value??null,meterReadingAt:state?.last_source_occurred_at,meterLastResetAt:reset?.at,meterAnomaly:state?.last_anomaly,meterFreshness:state?.current_value==null?'UNAVAILABLE':state.controller_status!=='ONLINE'?'OFFLINE':Date.now()-Date.parse(state.last_received_at)>30000?'STALE':'FRESH'};
+    }));
   });
 
   app.get('/api/pump-units', (req: any, res) => {
@@ -2140,7 +2124,7 @@ export async function startServer(
       return res.status(409).json({ message: 'A supplier with this name already exists.' });
     }
     if (normalizedPin && suppliers.some((supplier) => supplier.id !== id && normalizeTaxId(supplier.kraPin) === normalizedPin)) {
-      return res.status(409).json({ message: 'A supplier with this KRA PIN already exists.' });
+      return res.status(409).json({ message: 'A supplier with this Tax PIN already exists.' });
     }
 
     if (id) {
@@ -2207,7 +2191,7 @@ export async function startServer(
       } as any);
     } catch (error) {
       console.error('Error saving supplier to database:', error);
-      return res.status(isUniqueConstraintError(error)?409:500).json({ message: isUniqueConstraintError(error)?'Supplier name and KRA PIN must each be unique.':'Supplier could not be saved to the database.' });
+      return res.status(isUniqueConstraintError(error)?409:500).json({ message: isUniqueConstraintError(error)?'Supplier name and Tax PIN must each be unique.':'Supplier could not be saved to the database.' });
     }
 
     suppliers.unshift(newSupplier);
@@ -2462,10 +2446,10 @@ export async function startServer(
     const roleCheck = requirePermission(req as any, res, 'ADJUST_STOCK', 'view stock adjustment logs');
     if (roleCheck) return roleCheck;
     const page = Math.max(1, Number(req.query.page || 1));
-    const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize || 15)));
+    const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize || 10)));
     const sqlite = getSqlite();
     const total = Number((sqlite.prepare('SELECT COUNT(*) AS count FROM stock_adjustments').get() as any).count || 0);
-    const records = sqlite.prepare('SELECT * FROM stock_adjustments ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?')
+    const records = sqlite.prepare('SELECT * FROM stock_adjustments ORDER BY datetime(created_at) DESC, id DESC LIMIT ? OFFSET ?')
       .all(pageSize, (page - 1) * pageSize)
       .map((record: any) => ({
         id: record.id,
@@ -2493,6 +2477,7 @@ export async function startServer(
     const { type, itemId, newQty, reason } = req.body;
     const roleCheck = requirePermission(req as any, res, 'ADJUST_STOCK', 'stock adjustments');
     if (roleCheck) return roleCheck;
+    if (String(req.body.type || '').toLowerCase() === 'fuel') return res.status(403).json({ message: 'Fuel stock is managed in the Pumps & Tanks tab through administrator dip setup.' });
     const actor = (req as any).authUser as User;
 
     let previousQty = 0;
@@ -2584,12 +2569,12 @@ export async function startServer(
     const normalizedName=submittedName.toLowerCase();
     const normalizedPin = normalizeTaxId(kraPin);
     if (!submittedName) return res.status(400).json({ message: 'Customer name is required.' });
-    if (!normalizedPin) return res.status(400).json({ message: 'Customer KRA PIN is required.' });
+    if (!normalizedPin) return res.status(400).json({ message: 'Customer Tax PIN is required.' });
     if (customers.some((customer) => customer.id !== id && String(customer.name||'').trim().toLowerCase() === normalizedName)) {
       return res.status(409).json({ message: 'A customer with this name already exists.' });
     }
     if (customers.some((customer) => customer.id !== id && normalizeTaxId(customer.kraPin) === normalizedPin)) {
-      return res.status(409).json({ message: 'A customer with this KRA PIN already exists.' });
+      return res.status(409).json({ message: 'A customer with this Tax PIN already exists.' });
     }
 
     if (id) {
@@ -2621,7 +2606,7 @@ export async function startServer(
           } as any);
         } catch (error) {
           console.error('Error updating customer in database:', error);
-          return res.status(isUniqueConstraintError(error)?409:500).json({message:isUniqueConstraintError(error)?'Customer name and KRA PIN must each be unique.':'Customer account could not be updated.'});
+          return res.status(isUniqueConstraintError(error)?409:500).json({message:isUniqueConstraintError(error)?'Customer name and Tax PIN must each be unique.':'Customer account could not be updated.'});
         }
 
         addAuditLog(userId || 'sys', userName || 'Manager', userRole || 'Admin', 'CUSTOMER_UPDATED', 'Sales', `Updated customer ${existing.name} (Credit Limit: KES ${existing.creditLimit.toLocaleString()}, Status: ${existing.status}).`);
@@ -2659,7 +2644,7 @@ export async function startServer(
       } as any);
     } catch (error) {
       console.error('Error saving customer to database:', error);
-      return res.status(isUniqueConstraintError(error)?409:500).json({ message: isUniqueConstraintError(error)?'Customer name and KRA PIN must each be unique.':'Customer account could not be saved to the database.' });
+      return res.status(isUniqueConstraintError(error)?409:500).json({ message: isUniqueConstraintError(error)?'Customer name and Tax PIN must each be unique.':'Customer account could not be saved to the database.' });
     }
 
     customers.unshift(newCust);
@@ -2770,6 +2755,7 @@ export async function startServer(
 
   // Cash Flow Ledger
   app.get('/api/cash-flow', (req, res) => {
+    cashFlow = (db.cashFlowQueries.all() as any[]).map(normalizeStoredCashFlow);
     res.json(cashFlow);
   });
 
@@ -2842,6 +2828,7 @@ export async function startServer(
       vehiclePlate,
       items,
       reason,
+      reasonCode,
       issuedBy,
       userId,
       userName,
@@ -2905,8 +2892,15 @@ export async function startServer(
       const qty = Number(item.quantity ?? item.qty ?? 1) || 0;
       const unitPrice = Number(item.unitPrice ?? 0) || 0;
       const exactOriginalItemId = String(item.originalItemId || item.itemId || '').trim();
-      const selectedOriginalItem = originalTx?.items.find((src) => src.itemId === exactOriginalItemId) ||
-        (originalTx?.items.find((src) => String(src.name || '').trim().toLowerCase() === String(item.name || '').trim().toLowerCase()) || null);
+      const requestedSourceNozzleId = String(item.sourceNozzleId || '').trim();
+      const selectedOriginalItem = originalTx?.items.find((src) => {
+        const sameNozzle = !requestedSourceNozzleId || String(src.nozzleId || src.pumpId || '').trim() === requestedSourceNozzleId;
+        const sameItemId = src.itemId === exactOriginalItemId;
+        const sameName = String(src.name || '').trim().toLowerCase() === String(item.name || '').trim().toLowerCase();
+        return sameNozzle && (sameItemId || sameName);
+      }) || (!requestedSourceNozzleId
+        ? originalTx?.items.find((src) => String(src.name || '').trim().toLowerCase() === String(item.name || '').trim().toLowerCase()) || null
+        : null);
       const taxCode = normalizeTaxCodeValue(String((item.taxCode || selectedOriginalItem?.taxCode || 'A')).toUpperCase());
       const lineTotals = computedTotals.items[index] ?? {
         grossAmount: qty * unitPrice,
@@ -2917,6 +2911,8 @@ export async function startServer(
       return {
         itemId: item.itemId || `item-cn-${index}`,
         originalItemId: selectedOriginalItem?.itemId || exactOriginalItemId || item.itemId || `item-cn-${index}`,
+        // The source nozzle comes from the original persisted sale, never from the credit-note request.
+        sourceNozzleId: selectedOriginalItem?.nozzleId || selectedOriginalItem?.pumpId || null,
         name: item.name,
         type: item.type || selectedOriginalItem?.type || 'Fuel',
         qty,
@@ -2953,24 +2949,34 @@ export async function startServer(
 
       const requestedQtyByOriginalItem = new Map<string, number>();
       for (const item of formattedItems) {
+        const requestedSourceNozzleId = String(item.sourceNozzleId || '').trim();
         const match = originalTx.items.find((src) => {
+          const sameNozzle = !requestedSourceNozzleId || String(src.nozzleId || src.pumpId || '').trim() === requestedSourceNozzleId;
           const sameItemId = !!item.originalItemId && src.itemId === item.originalItemId;
           const sameName = String(src.name || '').trim().toLowerCase() === String(item.name || '').trim().toLowerCase();
-          return sameItemId || sameName;
+          return sameNozzle && (sameItemId || sameName);
         });
         if (!match) {
           return res.status(400).json({ message: `Credit item ${item.name || 'unknown'} does not exist on the original document.` });
         }
-        const itemKey = match.itemId || String(match.name || '').trim().toLowerCase();
+        const itemKey = (match.itemId || String(match.name || '').trim().toLowerCase()) + '::' + String(match.nozzleId || match.pumpId || '').trim();
         requestedQtyByOriginalItem.set(itemKey, (requestedQtyByOriginalItem.get(itemKey) ?? 0) + Number(item.qty ?? 0));
       }
 
       for (const [itemKey, requestedQty] of requestedQtyByOriginalItem) {
-        const match = originalTx.items.find((src) => (src.itemId || String(src.name || '').trim().toLowerCase()) === itemKey)!;
+        const separatorAt = itemKey.lastIndexOf('::');
+        const originalItemKey = separatorAt >= 0 ? itemKey.slice(0, separatorAt) : itemKey;
+        const originalSourceNozzleId = separatorAt >= 0 ? itemKey.slice(separatorAt + 2) : '';
+        const match = originalTx.items.find((src) => {
+          const sameItem = (src.itemId || String(src.name || '').trim().toLowerCase()) === originalItemKey;
+          const sameNozzle = !originalSourceNozzleId || String(src.nozzleId || src.pumpId || '').trim() === originalSourceNozzleId;
+          return sameItem && sameNozzle;
+        })!;
         const previouslyCreditedQty = relatedCreditNotes.reduce((sum, creditNote) => sum + (creditNote.items || []).reduce((itemSum, item) => {
           const sameItemId = !!item.originalItemId && item.originalItemId === match.itemId;
           const sameName = String(item.name || '').trim().toLowerCase() === String(match.name || '').trim().toLowerCase();
-          return sameItemId || sameName ? itemSum + Number(item.quantity ?? item.qty ?? 0) : itemSum;
+          const sameNozzle = !originalSourceNozzleId || !item.sourceNozzleId || String(item.sourceNozzleId).trim() === originalSourceNozzleId;
+          return (sameItemId || sameName) && sameNozzle ? itemSum + Number(item.quantity ?? item.qty ?? 0) : itemSum;
         }, 0), 0);
         const remainingQty = Math.max(Number(match.qty ?? 0) - previouslyCreditedQty, 0);
         if (requestedQty > remainingQty + 0.0001) {
@@ -2986,6 +2992,84 @@ export async function startServer(
       }
     }
 
+    // Shop returns are restored to shop stock. Fuel credit notes are financial-only
+    // unless the operator explicitly selects RTT (Return to Tank). RTT is tied to
+    // the nozzle persisted on the original sale so litres cannot be moved to a
+    // different tank by editing the credit-note request.
+    const normalizedCreditReasonCode = String(reasonCode || '').trim().toUpperCase();
+    const isReturnToTank = normalizedCreditReasonCode === 'RTT'
+      || /\bRTT\b|RETURN\s+TO\s+TANK/i.test(String(reason || ''));
+
+    if (isReturnToTank && formattedItems.some((item) => String(item.type || '').toLowerCase() !== 'fuel')) {
+      return res.status(400).json({ message: 'RTT is available only for fuel credit-note lines.' });
+    }
+    const stockReturnByItemId = new Map<string, { targetItem: ShopItem; quantity: number }>();
+    for (const creditedItem of formattedItems) {
+      if (String(creditedItem.type || '').toLowerCase() !== 'shop') continue;
+
+      const originalItemId = String(creditedItem.originalItemId || creditedItem.itemId || '').trim();
+      const normalizedName = String(creditedItem.name || '').trim().toLowerCase();
+      const targetItem = shopItems.find((shopItem) => shopItem.id === originalItemId)
+        || shopItems.find((shopItem) => shopItem.id === String(creditedItem.itemId || '').trim())
+        || shopItems.find((shopItem) => normalizedName && String(shopItem.name || '').trim().toLowerCase() === normalizedName);
+
+      if (!targetItem) {
+        return res.status(400).json({ message: 'The credited shop product ' + (creditedItem.name || 'unknown item') + ' no longer exists in inventory. Restore or map the product before issuing a credit note.' });
+      }
+
+      const quantity = Number(creditedItem.qty ?? creditedItem.quantity ?? 0);
+      if (!Number.isFinite(quantity) || quantity <= 0) {
+        return res.status(400).json({ message: 'Credit quantity for ' + targetItem.name + ' must be greater than zero.' });
+      }
+
+      const existing = stockReturnByItemId.get(targetItem.id);
+      stockReturnByItemId.set(targetItem.id, {
+        targetItem,
+        quantity: Number(((existing?.quantity ?? 0) + quantity).toFixed(6)),
+      });
+    }
+    const stockReturnPlans = [...stockReturnByItemId.values()];
+
+    const tankReturnByTankId = new Map<string, { targetTank: FuelTank; sourceNozzleId: string; quantity: number }>();
+    if (isReturnToTank) {
+      for (const creditedItem of formattedItems) {
+        const originalItemId = String(creditedItem.originalItemId || creditedItem.itemId || '').trim();
+        const sourceNozzleId = String(creditedItem.sourceNozzleId || '').trim();
+        const sourceNozzle = pumps.find((nozzle) => nozzle.id === sourceNozzleId);
+        if (!sourceNozzle) {
+          return res.status(400).json({ message: 'RTT requires the original sale to retain its source nozzle mapping.' });
+        }
+        if (String(sourceNozzle.fuelProductId || '') !== originalItemId) {
+          return res.status(400).json({ message: 'RTT cannot restore fuel because the original sale product does not match its source nozzle.' });
+        }
+
+        const targetTank = tanks.find((tank) => tank.id === sourceNozzle.tankId);
+        if (!targetTank || String(targetTank.fuelProductId || '') !== String(sourceNozzle.fuelProductId || '')) {
+          return res.status(400).json({ message: 'RTT requires an active source-tank mapping for the original sale nozzle.' });
+        }
+
+        const quantity = Number(creditedItem.qty ?? creditedItem.quantity ?? 0);
+        if (!Number.isFinite(quantity) || quantity <= 0) {
+          return res.status(400).json({ message: 'RTT quantity for ' + (creditedItem.name || 'fuel') + ' must be greater than zero.' });
+        }
+
+        const existing = tankReturnByTankId.get(targetTank.id);
+        tankReturnByTankId.set(targetTank.id, {
+          targetTank,
+          sourceNozzleId,
+          quantity: Number(((existing?.quantity ?? 0) + quantity).toFixed(6)),
+        });
+      }
+
+      for (const { targetTank, quantity } of tankReturnByTankId.values()) {
+        const currentLevel = Number(targetTank.currentLevelLiters ?? 0);
+        const capacity = Number(targetTank.capacityLiters ?? 0);
+        if (!Number.isFinite(currentLevel) || !Number.isFinite(capacity) || currentLevel + quantity > capacity + 0.000001) {
+          return res.status(400).json({ message: 'RTT would exceed the capacity of ' + targetTank.tankName + '.' });
+        }
+      }
+    }
+    const tankReturnPlans = [...tankReturnByTankId.values()];
     const newCN: CreditNote = {
       id: 'cn-' + Date.now(),
       creditNoteNo: generateCreditNoteNumber(),
@@ -3007,157 +3091,194 @@ export async function startServer(
       status: 'Issued',
     };
 
+    const cashFlowRecord: CashFlowRecord = {
+      id: 'cf-' + Date.now(),
+      timestamp: newCN.timestamp,
+      type: 'Outflow',
+      category: 'Credit Note',
+      amount: newCN.totalAmount,
+      paymentMethod: 'Credit',
+      referenceNo: newCN.creditNoteNo,
+      description: 'Credit note ' + newCN.creditNoteNo + ' issued against ' + (newCN.originalDocumentNo || 'unknown document') + ' - ' + (reason || 'No reason provided'),
+      recordedBy: issuedBy || userName || 'Station Manager',
+    };
+
+    const stockAdjustmentsBeforePersistence = [...stockAdjustments];
+    const auditLogsBeforePersistence = [...auditLogs];
+    const restoredStock: Array<{ targetItem: ShopItem; nextQty: number }> = [];
+    const restoredTankStock: Array<{ targetTank: FuelTank; quantity: number; nextQty: number }> = [];
+
     try {
-      db.creditNoteQueries.create({
-        id: newCN.id,
-        creditNoteNo: newCN.creditNoteNo,
-        customerId: null,
-        customerName: newCN.customerName || 'Walk-in Customer',
-        customerPin: newCN.customerPin || null,
-        vehiclePlate: newCN.vehiclePlate || null,
-        amount: Number(newCN.totalAmount ?? totalAmount),
-        subtotal: Number(newCN.subtotal ?? subtotal),
-        taxAmount: Number(newCN.taxAmount ?? totalTax),
-        totalAmount: Number(newCN.totalAmount ?? totalAmount),
-        reason: newCN.reason || reason || 'Other Reason',
-        narration: newCN.reason || reason || 'Credit note issued',
-        status: newCN.status || 'Issued',
-        itemsJson: JSON.stringify(newCN.items || []),
-        originalTransactionId: newCN.originalTransactionId || originalTx?.id || null,
-        originalDocumentType: newCN.originalDocumentType || targetType || 'invoice',
-        originalDocumentNo: newCN.originalDocumentNo || actualCreditDocumentNo || normalizedOriginalDocumentNo || null,
-        originalInvoiceNo: newCN.originalInvoiceNo || (targetType === 'invoice' ? effectiveInvoiceNo || actualCreditDocumentNo || null : null),
-        originalReceiptNo: newCN.originalReceiptNo || (targetType === 'receipt' ? effectiveReceiptNo || actualCreditDocumentNo || null : null),
-        issuedBy: userId || null,
-        issuedByName: issuedBy || userName || 'Station Manager',
-        approvedBy: null,
-        approvedByName: null,
-        appliedToTransactionId: null,
-        timestamp: newCN.timestamp,
-      } as any);
-    } catch (error) {
-      console.error('Error saving credit note to database:', error);
-      return res.status(500).json({ error: 'Credit note could not be saved.' });
-    }
-
-    // ---- Add cash flow record (OUTFLOW) ----
-    try {
-      const cashFlowRecord: CashFlowRecord = {
-        id: 'cf-' + Date.now(),
-        timestamp: newCN.timestamp,
-        type: 'Outflow',
-        category: 'Credit Note',
-        amount: newCN.totalAmount,
-        paymentMethod: 'Credit',
-        referenceNo: newCN.creditNoteNo,
-        description: `Credit note ${newCN.creditNoteNo} issued against ${newCN.originalDocumentNo || 'unknown document'} - ${reason || 'No reason provided'}`,
-        recordedBy: issuedBy || userName || 'Station Manager',
-      };
-
-      db.cashFlowQueries.create({
-        id: cashFlowRecord.id,
-        date: cashFlowRecord.timestamp.slice(0, 10),
-        type: 'Expense',
-        category: cashFlowRecord.category,
-        description: cashFlowRecord.description,
-        amount: cashFlowRecord.amount,
-        accountingMethod: cashFlowRecord.paymentMethod,
-        referenceNo: cashFlowRecord.referenceNo,
-        relatedTransactionId: originalTx?.id || null,
-        relatedDeliveryId: null,
-        relatedPaymentId: null,
-        recordedBy: userId || null,
-        recordedByName: cashFlowRecord.recordedBy,
-        approvedBy: null,
-        approvedByName: null,
-        notes: `Credit note ${newCN.creditNoteNo}`,
-        status: 'Recorded',
-      });
-
-      cashFlow.unshift(cashFlowRecord);
-    } catch (error) {
-      console.error('Error saving credit note cash flow entry:', error);
-      return res.status(500).json({ error: 'Credit note saved but cash flow entry failed.' });
-    }
-
-    const stockRestorationEntries = (newCN.items || []).filter((item: any) => {
-      const itemType = String(item.type || '').toLowerCase();
-      return itemType === 'shop';
-    });
-
-    for (const item of stockRestorationEntries) {
-      const itemQty = Number(item.qty ?? item.quantity ?? 0);
-      if (!(itemQty > 0)) continue;
-
-      let targetItem: any = null;
-      const originalMatchKey = String(item.originalItemId || item.itemId || '').trim();
-      if (originalTx && originalMatchKey) {
-        const originalSource = originalTx.items.find((src) => src.itemId === originalMatchKey);
-        if (originalSource) {
-          targetItem = shopItems.find((shopItem) => shopItem.id === originalSource.itemId || shopItem.name.toLowerCase() === originalSource.name.toLowerCase());
-        }
-      }
-
-      if (!targetItem) {
-        targetItem = shopItems.find((shopItem) => {
-          const sameName = String(shopItem.name || '').trim().toLowerCase() === String(item.name || '').trim().toLowerCase();
-          const sameCode = !!item.itemId && shopItem.code && String(shopItem.code).trim().toLowerCase() === String(item.itemId).trim().toLowerCase();
-          return sameName || sameCode;
-        });
-      }
-
-      if (!targetItem) continue;
-
-      const previousQty = Number(targetItem.stockQty ?? 0);
-      const nextQty = previousQty + itemQty;
-
-      const duplicateEntry = stockAdjustments.some((entry) =>
-        entry.source === 'Credit Note' &&
-        entry.referenceNumber === newCN.creditNoteNo &&
-        entry.itemId === targetItem.id &&
-        entry.originalDocumentNumber === (newCN.originalDocumentNo || newCN.originalInvoiceNo || newCN.originalReceiptNo || '—')
-      );
-
-      if (duplicateEntry) continue;
-
-      targetItem.stockQty = nextQty;
-
-      try {
-        db.shopItemQueries.update(targetItem.id, {
-          stockQty: Number(nextQty),
+      const persistCreditNoteAndStock = getSqlite().transaction(() => {
+        db.creditNoteQueries.create({
+          id: newCN.id,
+          creditNoteNo: newCN.creditNoteNo,
+          customerId: null,
+          customerName: newCN.customerName || 'Walk-in Customer',
+          customerPin: newCN.customerPin || null,
+          vehiclePlate: newCN.vehiclePlate || null,
+          amount: Number(newCN.totalAmount ?? totalAmount),
+          subtotal: Number(newCN.subtotal ?? subtotal),
+          taxAmount: Number(newCN.taxAmount ?? totalTax),
+          totalAmount: Number(newCN.totalAmount ?? totalAmount),
+          reason: newCN.reason || reason || 'Other Reason',
+          narration: newCN.reason || reason || 'Credit note issued',
+          status: newCN.status || 'Issued',
+          itemsJson: JSON.stringify(newCN.items || []),
+          originalTransactionId: newCN.originalTransactionId || originalTx?.id || null,
+          originalDocumentType: newCN.originalDocumentType || targetType || 'invoice',
+          originalDocumentNo: newCN.originalDocumentNo || actualCreditDocumentNo || normalizedOriginalDocumentNo || null,
+          originalInvoiceNo: newCN.originalInvoiceNo || (targetType === 'invoice' ? effectiveInvoiceNo || actualCreditDocumentNo || null : null),
+          originalReceiptNo: newCN.originalReceiptNo || (targetType === 'receipt' ? effectiveReceiptNo || actualCreditDocumentNo || null : null),
+          issuedBy: userId || null,
+          issuedByName: issuedBy || userName || 'Station Manager',
+          approvedBy: null,
+          approvedByName: null,
+          appliedToTransactionId: null,
+          timestamp: newCN.timestamp,
         } as any);
-      } catch (error) {
-        console.error('Error restoring stock for credited shop item:', error);
-      }
 
-      createStockAdjustmentRecord({
-        type: 'Shop',
-        itemId: targetItem.id,
-        itemName: targetItem.name,
-        itemCode: targetItem.code,
-        previousQty,
-        newQty: nextQty,
-        reason: 'Credit Note Return',
-        userId: userId || 'sys',
-        userName: userName || issuedBy || 'System',
-        userRole: userRole || 'Admin',
-        source: 'Credit Note',
-        referenceNumber: newCN.creditNoteNo,
-        originalDocumentNumber: newCN.originalDocumentNo || newCN.originalInvoiceNo || newCN.originalReceiptNo || '—',
-        movementType: 'Stock Return',
-        notes: `Credit note return restored ${itemQty} ${targetItem.name} unit(s) to inventory. Original document: ${newCN.originalDocumentNo || newCN.originalInvoiceNo || newCN.originalReceiptNo || 'Unknown document'}.`,
+        db.cashFlowQueries.create({
+          id: cashFlowRecord.id,
+          date: cashFlowRecord.timestamp.slice(0, 10),
+          type: 'Expense',
+          category: cashFlowRecord.category,
+          description: cashFlowRecord.description,
+          amount: cashFlowRecord.amount,
+          accountingMethod: cashFlowRecord.paymentMethod,
+          referenceNo: cashFlowRecord.referenceNo,
+          relatedTransactionId: originalTx?.id || null,
+          relatedDeliveryId: null,
+          relatedPaymentId: null,
+          recordedBy: userId || null,
+          recordedByName: cashFlowRecord.recordedBy,
+          approvedBy: null,
+          approvedByName: null,
+          notes: 'Credit note ' + newCN.creditNoteNo,
+          status: 'Recorded',
+        } as any);
+
+        for (const { targetItem, quantity } of stockReturnPlans) {
+          const persistedItem = db.shopItemQueries.byId(targetItem.id) as ShopItem | undefined;
+          if (!persistedItem) throw new Error('Credited shop product no longer exists in inventory.');
+          const previousQty = Number(persistedItem.stockQty ?? 0);
+          const nextQty = Number((previousQty + quantity).toFixed(6));
+          if (!Number.isFinite(previousQty) || !Number.isFinite(nextQty)) {
+            throw new Error('Credit note stock return has an invalid inventory quantity.');
+          }
+
+          db.shopItemQueries.update(targetItem.id, { stockQty: nextQty } as any);
+          createStockAdjustmentRecord({
+            type: 'Shop',
+            itemId: targetItem.id,
+            itemName: targetItem.name,
+            itemCode: targetItem.code,
+            previousQty,
+            newQty: nextQty,
+            reason: 'Credit Note Return',
+            userId: userId || 'sys',
+            userName: userName || issuedBy || 'System',
+            userRole: userRole || 'Admin',
+            source: 'Credit Note',
+            referenceNumber: newCN.creditNoteNo,
+            originalDocumentNumber: newCN.originalDocumentNo || newCN.originalInvoiceNo || newCN.originalReceiptNo || '-',
+            movementType: 'Stock Return',
+            notes: 'Credit note return restored ' + quantity + ' ' + targetItem.name + ' unit(s) to inventory. Original document: ' + (newCN.originalDocumentNo || newCN.originalInvoiceNo || newCN.originalReceiptNo || 'Unknown document') + '.',
+          });
+          restoredStock.push({ targetItem, nextQty });
+        }
+
+        for (const { targetTank, sourceNozzleId, quantity } of tankReturnPlans) {
+          const persistedNozzle = db.pumpQueries.byId(sourceNozzleId) as PumpNozzle | undefined;
+          const persistedTank = db.tankQueries.byId(targetTank.id) as FuelTank | undefined;
+          if (!persistedNozzle || persistedNozzle.tankId !== targetTank.id || persistedNozzle.fuelProductId !== targetTank.fuelProductId) {
+            throw new Error('RTT source nozzle mapping changed before the credit note could be recorded.');
+          }
+          if (!persistedTank || persistedTank.fuelProductId !== targetTank.fuelProductId) {
+            throw new Error('RTT source tank mapping changed before the credit note could be recorded.');
+          }
+
+          const fuelProduct = products.find((product) => product.id === targetTank.fuelProductId);
+          const sourceNozzleLabel = [persistedNozzle.pumpName, persistedNozzle.nozzleName].filter(Boolean).join(' / ') || persistedNozzle.id;
+          const previousQty = Number(persistedTank.currentLevelLiters ?? 0);
+          const capacity = Number(persistedTank.capacityLiters ?? 0);
+          const nextQty = Number((previousQty + quantity).toFixed(6));
+          if (!Number.isFinite(previousQty) || !Number.isFinite(capacity) || nextQty > capacity + 0.000001) {
+            throw new Error('RTT would exceed the current capacity of ' + targetTank.tankName + '.');
+          }
+
+          db.tankQueries.update(targetTank.id, { currentLevelLiters: nextQty } as any);
+          getSqlite().prepare("INSERT INTO tank_stock_ledger(id,tank_id,product_id,movement_type,quantity,before_balance,after_balance,source,reference,actor_id,delivery_id,occurred_at) VALUES(?,?,?,'CREDIT_NOTE_RTT',?,?,?,'CREDIT_NOTE_RTT',?,?,NULL,?)").run(
+            'credit-rtt:' + newCN.id + ':' + targetTank.id,
+            targetTank.id,
+            targetTank.fuelProductId,
+            quantity,
+            previousQty,
+            nextQty,
+            newCN.creditNoteNo,
+            String((req as any).authUser?.id || userId || 'SYSTEM'),
+            newCN.timestamp
+          );
+          createStockAdjustmentRecord({
+            type: 'Fuel',
+            itemId: targetTank.id,
+            itemName: targetTank.tankName,
+            itemCode: fuelProduct?.code || targetTank.fuelProductId,
+            previousQty,
+            newQty: nextQty,
+            reason: 'Credit Note RTT Return to Tank',
+            userId: String((req as any).authUser?.id || userId || 'sys'),
+            userName: String((req as any).authUser?.name || userName || issuedBy || 'System'),
+            userRole: ((req as any).authUser?.role || userRole || 'Admin') as any,
+            source: 'Credit Note RTT',
+            referenceNumber: newCN.creditNoteNo,
+            originalDocumentNumber: newCN.originalDocumentNo || newCN.originalInvoiceNo || newCN.originalReceiptNo || '-',
+            movementType: 'Stock Return',
+            notes: 'RTT return | Tank: ' + targetTank.tankName + ' | Product: ' + (fuelProduct?.name || targetTank.fuelName) + ' | Nozzle: ' + sourceNozzleLabel + ' | Added: ' + quantity + ' L | Stock: ' + previousQty + ' L -> ' + nextQty + ' L | Credit note: ' + newCN.creditNoteNo + ' | Original document: ' + (newCN.originalDocumentNo || newCN.originalInvoiceNo || newCN.originalReceiptNo || 'Unknown document') + '.',
+          });
+          restoredTankStock.push({ targetTank, quantity, nextQty });
+        }
       });
 
+      persistCreditNoteAndStock();
+    } catch (error) {
+      // createStockAdjustmentRecord updates in-memory history after its database write.
+      // Restore that in-memory projection when SQLite rolls the transaction back.
+      stockAdjustments = stockAdjustmentsBeforePersistence;
+      auditLogs = auditLogsBeforePersistence;
+      console.error('Error saving credit note with inventory return:', error);
+      return res.status(500).json({ error: 'Credit note could not be saved with its inventory return or RTT tank restoration.' });
+    }
+
+    cashFlow.unshift(cashFlowRecord);
+    for (const { targetItem, nextQty } of restoredStock) {
+      targetItem.stockQty = nextQty;
+    }
+    for (const { targetTank, nextQty } of restoredTankStock) {
+      targetTank.currentLevelLiters = nextQty;
+    }
+
+    for (const { targetItem, nextQty } of restoredStock) {
+      const returned = stockReturnPlans.find((plan) => plan.targetItem.id === targetItem.id);
       addAuditLog(
         userId || 'sys',
         userName || 'Station Staff',
         userRole || 'Admin',
         'CREDIT_NOTE_STOCK_RESTORED',
         'Shop',
-        `Restored ${itemQty} ${targetItem.name} unit(s) to inventory after credit note ${newCN.creditNoteNo}.`
+        'Restored ' + (returned?.quantity ?? 0) + ' ' + targetItem.name + ' unit(s) to inventory after credit note ' + newCN.creditNoteNo + '. New stock: ' + nextQty + '.'
       );
     }
-
+    for (const { targetTank, quantity, nextQty } of restoredTankStock) {
+      addAuditLog(
+        userId || 'sys',
+        userName || issuedBy || 'Station Staff',
+        userRole || 'Admin',
+        'CREDIT_NOTE_RTT_TANK_RESTORED',
+        'Tanks',
+        'RTT credit note ' + newCN.creditNoteNo + ' restored ' + quantity + ' L to ' + targetTank.tankName + '. New stock: ' + nextQty + ' L.'
+      );
+    }
     addAuditLog(
       userId || 'sys',
       issuedBy || 'Manager',
@@ -4203,6 +4324,10 @@ export async function startServer(
     let formattedOpeningPumps:ReturnType<typeof buildOpeningNozzleReadings>;
     try{formattedOpeningPumps=buildOpeningNozzleReadings(pumps.filter(pump=>pump.status==='Active'),openingPumpReadings||[],systemOpeningMeters,previousNozzleClosings(getSqlite()),transactions,openingCapturedAt);}
     catch(error){return res.status(400).json({message:error instanceof Error?error.message:String(error)});}
+    formattedOpeningPumps=formattedOpeningPumps.map(reading=>{
+      const state=getSqlite().prepare("SELECT current_reading_id,controller_id,last_source_occurred_at FROM automation_meter_current_state WHERE nozzle_id=? ORDER BY last_received_at DESC LIMIT 1").get(reading.pumpId) as any;
+      return {...reading,meterReadingId:state?.current_reading_id,meterControllerId:state?.controller_id,meterSourceOccurredAt:state?.last_source_occurred_at};
+    });
     const openingApprovals:ManagerApproval[]=[];
 
     const formattedOpeningTanks = (openingTankDips || []).map((td: any) => {
@@ -4275,11 +4400,12 @@ export async function startServer(
           const common={shiftId:newShift.id,userId:user.id,userName:user.name,nozzle,at:newShift.startTime};
           for(const review of [
             recordMeterReview(sqlite,{...common,stage:'Opening',reported:reading.reportedOpeningMeter,authoritative:reading.authoritativeOpeningMeter}),
-            recordMeterReview(sqlite,{...common,stage:'Unattended',reported:reading.unattendedMeterLiters,authoritative:reading.unattendedSalesLiters}),
+            recordMeterReview(sqlite,{...common,stage:'Unattended',reported:reading.previousShiftId?reading.unattendedMeterLiters:undefined,authoritative:reading.unattendedSalesLiters}),
           ])if(review)openingApprovals.push(review);
           for(const transactionId of reading.unattendedTransactionIds){
             const claim=sqlite.prepare('UPDATE transactions SET meter_reconciliation_shift_id=? WHERE id=? AND dispensed_without_shift=1 AND meter_reconciliation_shift_id IS NULL').run(newShift.id,transactionId);
             if(claim.changes!==1)throw new Error('Unattended transaction already belongs to another reconciliation. Retry clock-in.');
+            addAuditLog(user.id,user.name,user.role,'PTS2_TRANSACTION_ASSOCIATED_WITH_SHIFT','Shifts',JSON.stringify({transactionId,shiftId:newShift.id,nozzleId:reading.pumpId}));
           }
         }
         formattedOpeningTanks.filter((reading) => Math.abs(Number(reading.variance || 0)) > 0.000001).forEach((reading) => {
@@ -4296,6 +4422,23 @@ export async function startServer(
       });
 
       persistShift();
+      if(openingApprovals.length){
+        const issues=openingApprovals.map((item,index)=>(index+1)+'. '+item.reason).join('\n');
+        const bundled:any={
+          id:"app-"+randomUUID(),
+          timestamp:newShift.startTime,
+          shiftId:newShift.id,
+          type:"Shift Variance Review",
+          reviewScope:"READING",
+          requestedBy:user.name,
+          reason:"Opening / unattended reading issues\n"+issues,
+          amountOrQty:openingApprovals.length+" issue(s)",
+          status:"Pending"
+        };
+        getSqlite().prepare("DELETE FROM manager_approvals WHERE shift_id=? AND review_scope='READING'").run(newShift.id);
+        getSqlite().prepare("INSERT INTO manager_approvals(id,timestamp,shift_id,type,requested_by,reason,amount_or_qty,status,review_scope) VALUES(?,?,?,?,?,?,?,'Pending','READING')").run(bundled.id,bundled.timestamp,bundled.shiftId,bundled.type,bundled.requestedBy,bundled.reason,bundled.amountOrQty);
+        openingApprovals.splice(0,openingApprovals.length,bundled);
+      }
     } catch (error) {
       const existingPersistedShift = db.shiftQueries.active().find((shift: any) => shift.staffId === user.id);
       if (existingPersistedShift) {
@@ -4370,6 +4513,7 @@ export async function startServer(
     const actor = req.authUser as User | undefined;
     if (!actor) return res.status(401).json({ message: 'Authentication is required to view reconciliations.' });
     const canViewAll = hasPermission(actor, 'VIEW_THREE_WAY_LEDGER');
+    reconciliations = (db.reconciliationQueries.all() as any[]).map(normalizeStoredReconciliation);
     res.json(canViewAll ? reconciliations : reconciliations.filter((record) => record.staffId === actor.id));
   });
 
@@ -4397,11 +4541,13 @@ export async function startServer(
     }
 
     if(shift.status!=='Active')return res.status(409).json({message:'This shift is already closed.'});
-    let freshClosingMeters:Map<string,number>;
+    let freshClosingMeters=new Map<string,number>();
+    let closingMeterError:string|undefined;
     try{
       freshClosingMeters=await adapterManager.captureNozzleMeters((shift.openingPumpReadings||[]).map(reading=>reading.pumpId));
       pumps=(db.pumpQueries.all() as PumpNozzle[])??[];
-    }catch(error){return res.status(503).json({code:'SHIFT_METER_REFRESH_FAILED',message:'Unable to read closing nozzle meters. The shift remains open. '+(error instanceof Error?error.message:String(error))});}
+    }catch(error){closingMeterError=error instanceof Error?error.message:String(error);}
+    pumps=(db.pumpQueries.all() as PumpNozzle[])??[];
     const persistedShift=getSqlite().prepare('SELECT status FROM shifts WHERE id=?').get(shift.id) as any;
     if(persistedShift?.status!=='Active')return res.status(409).json({message:'This shift is already closed.'});
     shift=shifts.find(item=>item.id===shiftId)||shift;
@@ -4426,18 +4572,28 @@ export async function startServer(
     let processedPumps:ReturnType<typeof buildClosingNozzleReadings>;
     try{
       const systemClosingMeters=new Map(pumps.map(pump=>[pump.id,Number(pump.currentMeterReading)]));
+      const hardware=pts2NozzleIds();
+      if(closingMeterError)for(const id of hardware)systemClosingMeters.delete(id);
       for(const [id,value] of freshClosingMeters)systemClosingMeters.set(id,value);
-      processedPumps=buildClosingNozzleReadings(shift.openingPumpReadings||[],pumpReadings||[],systemClosingMeters,transactions,shift.id);
+      processedPumps=buildClosingNozzleReadings(shift.openingPumpReadings||[],pumpReadings||[],systemClosingMeters,transactions,shift.id,true).map(reading=>{
+        const state=getSqlite().prepare("SELECT current_reading_id FROM automation_meter_current_state WHERE nozzle_id=? ORDER BY last_received_at DESC LIMIT 1").get(reading.pumpId) as any;
+        const reset=getSqlite().prepare("SELECT id FROM automation_meter_readings WHERE nozzle_id=? AND source_occurred_at>=? AND anomaly_classification IN('METER_RESET','METER_DECREASE') LIMIT 1").get(reading.pumpId,shift!.startTime);
+        const meterIssue=reading.meterIssue||(reset?'METER_SEQUENCE_REVIEW':null);
+        return {...reading,meterIssue,meterSalesLiters:meterIssue?null:reading.meterSalesLiters,varianceLiters:meterIssue?null:reading.varianceLiters,staffedMeterLiters:meterIssue?null:reading.staffedMeterLiters,closingMeterReadingId:reading.closingMeter==null?null:state?.current_reading_id,closingMeterError:hardware.has(reading.pumpId)?closingMeterError:undefined};
+
+      });
     }
     catch(error){return res.status(400).json({message:error instanceof Error?error.message:String(error)});}
     const closingApprovals:ManagerApproval[]=[];
-    const hasUnresolvedMeterReview=Boolean(getSqlite().prepare("SELECT 1 FROM manager_approvals WHERE shift_id=? AND review_scope='READING' AND status<>'Approved'").get(shift.id));
-    const requiresMeterApproval=hasUnresolvedMeterReview||processedPumps.some(reading=>hasMeterVariance(reading.reportedVarianceLiters)||hasMeterVariance(reading.varianceLiters));
-    const totalPumpVarLiters=processedPumps.reduce((sum,reading)=>sum+Math.abs(reading.varianceLiters),0);
+    const outstandingReadingVariances=getSqlite().prepare("SELECT reading_type,reported_value,authoritative_value,variance FROM reading_variances WHERE shift_id=? AND status<>'Resolved' AND ABS(variance)>=0.001").all(shift.id) as any[];
+    const hasUnresolvedMeterReview=outstandingReadingVariances.length>0||Boolean(getSqlite().prepare("SELECT 1 FROM manager_approvals WHERE shift_id=? AND review_scope='READING' AND status<>'Approved'").get(shift.id));
+    const requiresMeterApproval=!!closingMeterError||hasUnresolvedMeterReview||processedPumps.some(reading=>!!reading.meterIssue||hasMeterVariance(reading.reportedVarianceLiters)||hasMeterVariance(reading.varianceLiters));
+    const pumpIncomplete=processedPumps.some(reading=>reading.reportedClosingMeter==null||reading.closingMeter==null);
+    const totalPumpVarLiters=pumpIncomplete?null:processedPumps.reduce((sum,reading)=>sum+Math.abs(Number(reading.varianceLiters)),0);
 
     let totalTankVarLiters = 0;
     const processedTanks = (tankDips || []).map((t: any) => {
-      const calcUsage = Math.max(0, t.openingDip - t.closingDip);
+      const calcUsage = Number(t.openingDip) - Number(t.closingDip);
       const varL = calcUsage - t.actualSales;
       totalTankVarLiters += Math.abs(varL);
       return {
@@ -4450,10 +4606,9 @@ export async function startServer(
     let status: ThreeWayReconciliation['status'] = 'Auto-Approved';
     const absCashVar = Math.abs(cashVariance);
 
-    if (requiresMeterApproval || absCashVar > 1000 || totalPumpVarLiters > 20 || totalTankVarLiters > 20) {
+    const anyVariance = Math.abs(cashVariance) > 0.005 || pumpIncomplete || (totalPumpVarLiters??0) > 0.0005 || totalTankVarLiters > 0.0005;
+    if (requiresMeterApproval || anyVariance) {
       status = 'Pending Approval';
-    } else if (absCashVar > 200 || totalPumpVarLiters > 5 || totalTankVarLiters > 5) {
-      status = 'Warning';
     }
 
     const rec: ThreeWayReconciliation = {
@@ -4473,7 +4628,28 @@ export async function startServer(
       status,
     };
 
-    reconciliations.unshift(rec);
+    const closedStatus = status==='Pending Approval' ? 'Pending Approval' : 'Completed';
+    const exceptionDetails=processedPumps.filter(reading=>reading.meterIssue).map(reading=>reading.pumpName+': '+reading.meterIssue+' (opening '+reading.openingMeter+', closing '+(reading.closingMeter??'unavailable')+')').join('; ');
+    const priorShiftApprovalEvidence = (getSqlite().prepare("SELECT type, reason, amount_or_qty, status FROM manager_approvals WHERE shift_id=? AND status<>'Approved'").all(shift.id) as any[])
+      .map((item) => item.type + ': ' + item.amount_or_qty + (item.reason ? ' — ' + item.reason : ''));
+    const shiftApproval:ManagerApproval|null=status==='Pending Approval'?{
+      id:'app-'+randomUUID(),timestamp:rec.timestamp,shiftId:shift.id,
+      type:'Shift Variance Review',requestedBy:shift.staffName,
+      reason:[
+        'Shift ' + shift.id + ' closed; one manager decision is required for all variances.',
+        'Cash variance: KES ' + cashVariance.toFixed(2),
+        'Pump variance: ' + (totalPumpVarLiters==null?'INCOMPLETE — missing user record':totalPumpVarLiters.toFixed(3)+' L'),
+        'Tank variance: ' + totalTankVarLiters.toFixed(3) + ' L',
+        exceptionDetails ? 'Controller/meter exception: ' + exceptionDetails : '',
+        closingMeterError ? 'Controller read failed: ' + closingMeterError : '',
+        hasUnresolvedMeterReview ? 'Opening/reading variances: ' + JSON.stringify(outstandingReadingVariances) : '',
+        priorShiftApprovalEvidence.length ? 'Prior shift-linked review evidence:\n' + priorShiftApprovalEvidence.join('\n') : '',
+        'Nozzle evidence: ' + JSON.stringify(processedPumps),
+        'Tank evidence: ' + JSON.stringify(processedTanks),
+      ].filter(Boolean).join('\n'),
+      amountOrQty:'KES '+cashVariance.toFixed(2)+' / pump '+(totalPumpVarLiters==null?'INCOMPLETE':totalPumpVarLiters.toFixed(3)+' L')+' / tank '+totalTankVarLiters.toFixed(3)+' L',
+      reviewScope:'SHIFT', status:'Pending'
+    }:null;
 
     try {
       const persistReconciliation = getSqlite().transaction(() => {
@@ -4505,9 +4681,10 @@ export async function startServer(
         processedPumps.forEach((reading: any) => {
           const pump = pumps.find((item) => item.id === reading.pumpId);
           if (!pump) return;
-          const review=recordMeterReview(getSqlite(),{shiftId:shift!.id,userId:actingUser.id,userName:actingUser.name,nozzle:pump,stage:'Closing',reported:reading.reportedClosingMeter,authoritative:reading.closingMeter,at:rec.timestamp});
+          const review=reading.closingMeter==null?null:recordMeterReview(getSqlite(),{shiftId:shift!.id,userId:actingUser.id,userName:actingUser.name,nozzle:pump,stage:'Closing',reported:reading.reportedClosingMeter,authoritative:reading.closingMeter,at:rec.timestamp});
           if(review)closingApprovals.push(review);
 
+          if(reading.closingMeter==null||reading.meterSalesLiters==null)return;
           db.nozzleReadingQueries.create({
             id: `reading-${Date.now()}-${pump.id}-close`,
             nozzleId: pump.id,
@@ -4528,79 +4705,31 @@ export async function startServer(
         processedTanks.forEach((dip: any) => {
           const tank = tanks.find((item) => item.id === dip.tankId);
           if (!tank) return;
-          tank.lastDipReading = Number(dip.closingDip);
-          tank.lastDipTime = rec.timestamp;
           db.tankQueries.update(tank.id, {
-            lastDipReading: tank.lastDipReading,
-            lastDipTime: tank.lastDipTime,
+            lastDipReading: Number(dip.closingDip),
+            lastDipTime: rec.timestamp,
           } as any);
         });
+        if(shiftApproval){
+          getSqlite().prepare("DELETE FROM manager_approvals WHERE shift_id=?").run(shiftApproval.shiftId);
+          getSqlite().prepare("INSERT INTO manager_approvals(id,timestamp,shift_id,type,requested_by,reason,amount_or_qty,status,review_scope) VALUES(?,?,?,?,?,?,?,'Pending','SHIFT')").run(shiftApproval.id,shiftApproval.timestamp,shiftApproval.shiftId,shiftApproval.type,shiftApproval.requestedBy,shiftApproval.reason,shiftApproval.amountOrQty);
+        }
+        db.shiftQueries.update(shift!.id,{endTime:rec.timestamp,status:closedStatus,closingCash:notesSum,closingPumpReadingsJson:JSON.stringify(processedPumps),closingTankDipsJson:JSON.stringify(processedTanks)} as any);
+        db.userQueries.update(shift!.staffId,{currentShiftId:null} as any);
+        getSqlite().prepare("UPDATE shift_assignments SET clock_out_time=?,status='Completed',expired_at=NULL,missed_reason=NULL WHERE clock_in_shift_id=?").run(rec.timestamp,shift!.id);
       });
 
       persistReconciliation();
     } catch (error) {
-      reconciliations.shift();
       console.error('Error saving reconciliation to database:', error);
       return res.status(500).json({ message: 'Reconciliation could not be saved.' });
     }
 
-    approvals.unshift(...closingApprovals);
-    shift.endTime = new Date().toISOString();
-    shift.actualCashCount = notesSum;
-    shift.cashVariance = cashVariance;
-    shift.fuelVarianceLiters = totalPumpVarLiters;
-    shift.tankVarianceLiters = totalTankVarLiters;
-    shift.closingPumpReadings = processedPumps;
-    shift.closingTankDips = processedTanks;
-
-    if (status === 'Pending Approval' || status === 'Warning') {
-      shift.status = 'Pending Approval';
-      shift.approvalStatus = 'Pending';
-
-      const approvalItem: ManagerApproval = {
-        id: 'app-' + Date.now(),
-        timestamp: new Date().toISOString(),
-        shiftId: shift.id,
-        type: absCashVar > 1000 ? 'Cash Variance' : 'Fuel Discrepancy',
-        requestedBy: shift.staffName,
-        reason: `3-Way Reconciliation Flagged: Cash Var = KES ${cashVariance.toFixed(2)}, Pump Var = ${totalPumpVarLiters.toFixed(1)}L, Tank Var = ${totalTankVarLiters.toFixed(1)}L.`,
-        amountOrQty: `KES ${cashVariance.toFixed(2)} / ${totalPumpVarLiters.toFixed(1)}L`,
-        status: 'Pending',
-      };
-      approvals.unshift(approvalItem);
-
-      try {
-        const sqlite = getSqlite();
-        sqlite.prepare(`INSERT INTO manager_approvals (id, timestamp, shift_id, type, requested_by, reason, amount_or_qty, status)
-          VALUES (?, ?, ?, ?, ?, ?, ?, 'Pending')`)
-          .run(approvalItem.id, approvalItem.timestamp, approvalItem.shiftId, approvalItem.type, approvalItem.requestedBy, approvalItem.reason, approvalItem.amountOrQty);
-      } catch (error) {
-        console.error('Error persisting approval:', error);
-      }
-    } else {
-      shift.status = 'Completed';
-      shift.approvalStatus = 'Approved';
-    }
-
-    const usr = users.find((u) => u.id === shift.staffId);
-    if (usr) usr.currentShiftId = null;
-
-    try {
-      db.shiftQueries.update(shift.id, {
-        endTime: shift.endTime,
-        status: shift.status,
-        closingCash: shift.actualCashCount ?? null,
-        closingPumpReadingsJson: JSON.stringify(processedPumps),
-        closingTankDipsJson: JSON.stringify(processedTanks),
-      } as any);
-      if (usr) db.userQueries.update(usr.id, { currentShiftId: null } as any);
-      getSqlite().prepare(`UPDATE shift_assignments
-        SET clock_out_time = ?, status = 'Completed', expired_at = NULL, missed_reason = NULL
-        WHERE clock_in_shift_id = ?`).run(shift.endTime, shift.id);
-    } catch (error) {
-      console.error('Error saving reconciled shift state to database:', error);
-      return res.status(500).json({ message: 'Reconciliation was recorded, but the shift could not be closed.' });
-    }
+    reconciliations.unshift(rec);
+    approvals.unshift(...(shiftApproval?[shiftApproval]:[]));
+    Object.assign(shift,{endTime:rec.timestamp,status:closedStatus,approvalStatus:shiftApproval?'Pending':'Approved',actualCashCount:notesSum,cashVariance,fuelVarianceLiters:totalPumpVarLiters,tankVarianceLiters:totalTankVarLiters,closingPumpReadings:processedPumps,closingTankDips:processedTanks});
+    const usr=users.find(u=>u.id===shift!.staffId);
+    if(usr)usr.currentShiftId=null;
 
     addAuditLog(
       actingUser.id,
@@ -4616,92 +4745,22 @@ export async function startServer(
   });
 
   // Approvals
-  app.get('/api/approvals', (req, res) => {
-    const actor=(req as any).authUser as User|undefined;
-    if(!actor)return res.status(401).json({message:'Authentication is required to view approvals.'});
-    if(!isAdminRole(actor.role)&&!hasPermission(actor,'MANAGE_APPROVALS'))return res.status(403).json({message:'Admin, Super Admin, or MANAGE_APPROVALS permission is required.'});
-    res.json(approvals);
-  });
-
-  app.post('/api/approvals/resolve', (req, res) => {
-    const { approvalId, action, managerId, managerName, managerPin, notes } = req.body;
-    const actor=(req as any).authUser as User|undefined;
-    if(!actor)return res.status(401).json({message:'Authentication is required.'});
-    if(!isAdminRole(actor.role)&&!hasPermission(actor,'MANAGE_APPROVALS'))return res.status(403).json({message:'Admin, Super Admin, or MANAGE_APPROVALS permission is required.'});
-    if(String(managerId)!==actor.id)return res.status(403).json({message:'Approval must be authorized by the signed-in user.'});
-    const mgr=getUserById(actor.id);
-    if(!mgr||!verifyStoredPin(mgr.pin,managerPin).valid)return res.status(403).json({message:'Administrator PIN verification failed.'});
-    if(action!=='Approved'&&action!=='Rejected')return res.status(400).json({message:'Action must be Approved or Rejected.'});
-
-    const appItem = approvals.find((a) => a.id === approvalId) as any;
-    if (!appItem) return res.status(404).json({ message: 'Approval item not found' });
-
-    if(appItem.reviewScope==='READING'){
-      try{
-        getSqlite().transaction(()=>{
-          getSqlite().prepare("UPDATE manager_approvals SET status=?,manager_id=?,manager_notes=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").run(action,mgr.id,notes||'',approvalId);
-          if(appItem.readingVarianceId)getSqlite().prepare("UPDATE reading_variances SET status=?,reviewed_by=?,reviewed_at=?,resolved_by=?,resolved_at=?,resolution_notes=? WHERE id=?").run(action==='Approved'?'Resolved':'Reviewed',mgr.id,new Date().toISOString(),action==='Approved'?mgr.id:null,action==='Approved'?new Date().toISOString():null,notes||'',appItem.readingVarianceId);
-        })();
-      }catch(error){return res.status(500).json({message:'Meter review could not be saved.'});}
-      Object.assign(appItem,{status:action,managerId:mgr.id,managerNotes:notes||''});
-      addAuditLog(mgr.id,mgr.name,mgr.role,`APPROVAL_${action.toUpperCase()}`,'Approvals',`${action} meter evidence review ${appItem.id}; physical meters and shift boundaries retained. ${notes||''}`);
-      return res.json(appItem);
-    }
-    if(action==='Approved'&&appItem.shiftId&&getSqlite().prepare("SELECT 1 FROM manager_approvals WHERE shift_id=? AND review_scope='READING' AND status<>'Approved'").get(appItem.shiftId)){
-      return res.status(409).json({message:'Resolve the nozzle reading and unattended activity reviews before approving this reconciliation.'});
-    }
-    appItem.status = action === 'Approved' ? 'Approved' : 'Rejected';
-    appItem.managerId = mgr.id;
-    appItem.managerNotes = notes;
-
-    try {
-      const sqlite = getSqlite();
-      sqlite.prepare(`UPDATE manager_approvals SET status = ?, manager_id = ?, manager_notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
-        .run(appItem.status, mgr.id, notes, approvalId);
-    } catch (error) {
-      console.error('Error updating approval in database:', error);
-    }
-
-    if (appItem.shiftId) {
-      const shift = shifts.find((s) => s.id === appItem.shiftId) as any;
-      if (shift) {
-        shift.approvalStatus = action === 'Approved' ? 'Approved' : 'Rejected';
-        shift.status = action === 'Approved' ? 'Completed' : 'Flagged';
-        db.shiftQueries.update(shift.id, {
-          status: shift.status,
-          endTime: shift.endTime,
-          closingCash: shift.actualCashCount ?? null,
-        } as any);
-      }
-
-      const recIndex = reconciliations.findIndex((r) => r.shiftId === appItem.shiftId);
-      if (recIndex >= 0) {
-        reconciliations[recIndex].status = action === 'Approved' ? 'Approved' : 'Rejected';
-
-        try {
-          const sqlite = getSqlite();
-          sqlite.prepare('UPDATE reconciliations SET status = ?, approved_by = ?, approved_by_name = ?, updated_at = CURRENT_TIMESTAMP WHERE shift_id = ?')
-            .run(reconciliations[recIndex].status, mgr.id, mgr.name, appItem.shiftId);
-          reconciliations[recIndex].managerId = mgr.id;
-          reconciliations[recIndex].managerNotes = notes || undefined;
-        } catch (error) {
-          console.error('Error updating reconciliation status:', error);
-        }
-      }
-    }
-
-    addAuditLog(
-      mgr.id,
-      mgr.name,
-      mgr.role,
-      `APPROVAL_${action.toUpperCase()}`,
-      'Approvals',
-      `Manager ${mgr.name} ${action} item ${appItem.id} (${appItem.type}): ${notes}`
-    );
-
-    res.json(appItem);
-  });
-
+  app.use('/api/approvals', createApprovalRouter({
+    db,
+    getSqlite,
+    getApprovals: () => approvals,
+    setApprovals: (nextApprovals) => { approvals = nextApprovals; },
+    getShifts: () => shifts,
+    setShifts: (nextShifts) => { shifts = nextShifts; },
+    setReconciliations: (nextReconciliations) => { reconciliations = nextReconciliations; },
+    readPersistedManagerApprovals,
+    normalizeStoredReconciliation,
+    isAdminRole,
+    hasPermission,
+    getUserById,
+    verifyStoredPin,
+    addAuditLog,
+  }));
   // Audit Logs
   app.get('/api/audit-logs', (req, res) => {
     const roleCheck = requirePermission(req as any, res, 'VIEW_AUDIT_TRAIL', 'audit log access');
@@ -4793,9 +4852,10 @@ export async function startServer(
         closingPumpReadings:parseReadingList(shift.closingPumpReadingsJson),closingTankDips:parseReadingList(shift.closingTankDipsJson),
       })) as ShiftSession[];
       schedules = allData.schedules as ShiftSchedule[];
-      transactions = allData.transactions as Transaction[];
-      deliveries = allData.deliveries as FuelDelivery[];
-      approvals = allData.approvals as ManagerApproval[];
+      transactions = (allData.transactions as any[]).map(normalizeStoredTransaction);
+      deliveries = (allData.deliveries as any[]).map(normalizeStoredDelivery);
+      reconciliations = (allData.reconciliations as any[]).map(normalizeStoredReconciliation);
+      approvals = readPersistedManagerApprovals();
       auditLogs = allData.auditLogs as AuditLog[];
       stationSettings = allData.settings as StationSettings;
       creditNotes = allData.creditNotes as CreditNote[];
@@ -4822,7 +4882,7 @@ export async function startServer(
   await startup;
   const address = server.address();
   const port = typeof address === 'object' && address ? address.port : PORT;
-  console.log(`DT-FMS Server listening on http://127.0.0.1:${port}`);
+  console.log(`DEITAX FMS.A Server listening on http://127.0.0.1:${port}`);
 
   return { port, close: closeServer };
 }

@@ -1,15 +1,9 @@
 import {
   User,
-  FuelProduct,
-  FuelTank,
-  PumpNozzle,
-  FuelPump,
   ShopItem,
   ShiftSession,
   Transaction,
   ThreeWayReconciliation,
-  FuelDelivery,
-  ManagerApproval,
   AuditLog,
   ShiftSchedule,
   ShiftPlan,
@@ -23,17 +17,15 @@ import {
   Permission,
 } from '../types';
 import type { DashboardSalesSummary } from '../utils/sales-summary';
+import { fetchApi } from '../shared/api/http-client';
+import { managerApprovalsApi } from '../features/manager-approvals/api/manager-approvals.api';
+import { pumpsAndTanksApi } from '../features/pumps-tanks/api/pumps-and-tanks.api';
 import {
   INITIAL_USERS,
-  INITIAL_PRODUCTS,
-  INITIAL_TANKS,
-  INITIAL_PUMPS,
   INITIAL_SHOP_ITEMS,
   INITIAL_SHIFTS,
   INITIAL_SCHEDULES,
   INITIAL_TRANSACTIONS,
-  INITIAL_DELIVERIES,
-  INITIAL_APPROVALS,
   INITIAL_AUDIT_LOGS,
   INITIAL_STATION_SETTINGS,
   INITIAL_CREDIT_NOTES,
@@ -43,31 +35,10 @@ import {
   INITIAL_STOCK_ADJUSTMENTS,
 } from '../data/initialData';
 
-// Helper for API requests with local fallback
-async function fetchApi<T>(endpoint: string, options?: RequestInit, fallbackData?: T): Promise<T> {
-  try {
-    const res = await fetch(endpoint, {
-      credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json' },
-      ...options,
-    });
-    if (!res.ok) {
-      const errJson = await res.json().catch(() => ({}));
-      throw new Error(errJson.message || `API error: ${res.status}`);
-    }
-    return await res.json();
-  } catch (err) {
-    console.warn(`API call to ${endpoint} failed, using local memory state:`, err);
-    const method=String(options?.method||'GET').toUpperCase();
-    if(method!=='GET'&&err instanceof TypeError)throw new Error('Action unavailable while offline.');
-    if (fallbackData !== undefined) {
-      return fallbackData;
-    }
-    throw err;
-  }
-}
-
 export const api = {
+  // Compatibility facade: physical asset code imports pumpsAndTanksApi directly.
+  getTankEvidence: pumpsAndTanksApi.getTankEvidence,
+  createManualDip: pumpsAndTanksApi.createManualDip,
   getBootstrapStatus: () => fetchApi<{ hasUsers: boolean }>('/api/auth/bootstrap-status'),
 
   getStatus: () => fetchApi<{ status: string; activeShiftsCount: number; pendingApprovalsCount: number; totalSalesToday: number }>('/api/status'),
@@ -139,76 +110,22 @@ export const api = {
   updateRole: (id:string,role:{name:string;description:string;status:'ACTIVE'|'INACTIVE';permissions:Permission[]}) => fetchApi<any>(`/api/roles/${id}`,{method:'PUT',body:JSON.stringify(role)}),
   deleteRole: (id:string) => fetchApi<{success:boolean}>(`/api/roles/${id}`,{method:'DELETE'}),
 
-  getTanks: () => fetchApi<FuelTank[]>('/api/tanks', undefined, INITIAL_TANKS),
-
-  registerTank: (tankData: any, userId?: string, userName?: string, userRole?: string) =>
-    fetchApi<FuelTank>('/api/tanks', {
-      method: 'POST',
-      body: JSON.stringify({ ...tankData, userId, userName, userRole }),
-    }),
-
-  deleteTank: (tankId: string, userId?: string, userName?: string, userRole?: string) =>
-    fetchApi<{ success: boolean; deletedTank: FuelTank; deletedPumps: PumpNozzle[] }>('/api/tanks/' + tankId, {
-      method: 'DELETE',
-      body: JSON.stringify({ userId, userName, userRole }),
-    }),
-
-  recordDip: (tankId: string, dipReadingLiters: number, userId?: string, userName?: string, userRole?: string) =>
-    fetchApi<FuelTank>('/api/tanks/dip', {
-      method: 'POST',
-      body: JSON.stringify({ tankId, dipReadingLiters, userId, userName, userRole }),
-    }),
-
-  getDeliveries: () => fetchApi<FuelDelivery[]>('/api/deliveries', undefined, INITIAL_DELIVERIES),
-
-  addDelivery: (deliveryData: any) =>
-    fetchApi<{ delivery: FuelDelivery; updatedTank: FuelTank }>('/api/deliveries', {
-      method: 'POST',
-      body: JSON.stringify(deliveryData),
-    }),
-
-  getPumps: () => fetchApi<PumpNozzle[]>('/api/pumps', undefined, INITIAL_PUMPS),
-
-  getPumpUnits: () => fetchApi<FuelPump[]>('/api/pump-units', undefined, []),
-
-  registerPump: (pumpData: any, userId?: string, userName?: string, userRole?: string) =>
-    fetchApi<PumpNozzle>('/api/pumps', {
-      method: 'POST',
-      body: JSON.stringify({ ...pumpData, userId, userName, userRole }),
-    }),
-
-  deletePump: (pumpId: string, userId?: string, userName?: string, userRole?: string) =>
-    fetchApi<{ success: boolean; deletedPump: PumpNozzle }>('/api/pumps/' + pumpId, {
-      method: 'DELETE',
-      body: JSON.stringify({ userId, userName, userRole }),
-    }),
-
-  deletePumpUnit: (pumpUnitId: string, userId?: string, userName?: string, userRole?: string) =>
-    fetchApi<{ success: boolean }>('/api/pump-units/' + pumpUnitId, {
-      method: 'DELETE',
-      body: JSON.stringify({ userId, userName, userRole }),
-    }),
-
-  getProducts: () => fetchApi<FuelProduct[]>('/api/products', undefined, INITIAL_PRODUCTS),
-
-  updateProductPrice: (productId: string, newPrice: number, taxCode?: string, productName?: string, userId?: string, userName?: string, userRole?: string) =>
-    fetchApi<FuelProduct>('/api/products/price', {
-      method: 'POST',
-      body: JSON.stringify({ productId, newPrice, taxCode, productName, userId, userName, userRole }),
-    }),
-
-  updateFuelProduct: (productId: string, productData: Partial<FuelProduct>, userId?: string, userName?: string, userRole?: string) =>
-    fetchApi<FuelProduct>(`/api/products/${productId}`, {
-      method: 'PUT',
-      body: JSON.stringify({ ...productData, userId, userName, userRole }),
-    }),
-
-  deleteFuelProduct: (productId: string, userId?: string, userName?: string, userRole?: string) =>
-    fetchApi<{ success: boolean; deletedProduct: FuelProduct }>(`/api/products/${productId}`, {
-      method: 'DELETE',
-      body: JSON.stringify({ userId, userName, userRole }),
-    }),
-
+  // Compatibility facade: callers migrate to pumpsAndTanksApi by feature.
+  getTanks: pumpsAndTanksApi.getTanks,
+  registerTank: (tankData: any, userId?: string, userName?: string, userRole?: string) => pumpsAndTanksApi.registerTank(tankData, { userId, userName, userRole }),
+  deleteTank: (tankId: string, userId?: string, userName?: string, userRole?: string) => pumpsAndTanksApi.deleteTank(tankId, { userId, userName, userRole }),
+  recordDip: (tankId: string, dipReadingLiters: number, userId?: string, userName?: string, userRole?: string) => pumpsAndTanksApi.recordInitialDip(tankId, dipReadingLiters, { userId, userName, userRole }),
+  getDeliveries: pumpsAndTanksApi.getDeliveries,
+  addDelivery: pumpsAndTanksApi.addDelivery,
+  getPumps: pumpsAndTanksApi.getPumps,
+  getPumpUnits: pumpsAndTanksApi.getPumpUnits,
+  registerPump: (pumpData: any, userId?: string, userName?: string, userRole?: string) => pumpsAndTanksApi.registerPump(pumpData, { userId, userName, userRole }),
+  deletePump: (pumpId: string, userId?: string, userName?: string, userRole?: string) => pumpsAndTanksApi.deletePump(pumpId, { userId, userName, userRole }),
+  deletePumpUnit: (pumpUnitId: string, userId?: string, userName?: string, userRole?: string) => pumpsAndTanksApi.deletePumpUnit(pumpUnitId, { userId, userName, userRole }),
+  getProducts: pumpsAndTanksApi.getProducts,
+  updateProductPrice: (productId: string, newPrice: number, taxCode?: string, productName?: string, userId?: string, userName?: string, userRole?: string) => pumpsAndTanksApi.updateProductPrice(productId, newPrice, taxCode, productName, { userId, userName, userRole }),
+  updateFuelProduct: (productId: string, productData: any, userId?: string, userName?: string, userRole?: string) => pumpsAndTanksApi.updateFuelProduct(productId, productData, { userId, userName, userRole }),
+  deleteFuelProduct: (productId: string, userId?: string, userName?: string, userRole?: string) => pumpsAndTanksApi.deleteFuelProduct(productId, { userId, userName, userRole }),
   getSettings: () => fetchApi<StationSettings>('/api/settings', undefined, INITIAL_STATION_SETTINGS),
 
   updateSettings: (settings: Partial<StationSettings>, userId?: string, userName?: string, userRole?: string) =>
@@ -358,13 +275,10 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
-  getApprovals: () => fetchApi<ManagerApproval[]>('/api/approvals', undefined, INITIAL_APPROVALS),
-
-  resolveApproval: (approvalId: string, action: 'Approved' | 'Rejected', managerId: string, managerName: string, managerPin: string, notes: string) =>
-    fetchApi<ManagerApproval>('/api/approvals/resolve', {
-      method: 'POST',
-      body: JSON.stringify({ approvalId, action, managerId, managerName, managerPin, notes }),
-    }),
+  // Compatibility facade: feature-owned code imports managerApprovalsApi directly.
+  getApprovals: managerApprovalsApi.getAll,
+  resolveApproval: managerApprovalsApi.resolve,
+  resolveApprovals: managerApprovalsApi.resolveMany,
 
   getAuditLogs: async () => {
     const page = await fetchApi<{ records: AuditLog[] }>('/api/audit-logs?page=1&pageSize=100', undefined, { records: INITIAL_AUDIT_LOGS });

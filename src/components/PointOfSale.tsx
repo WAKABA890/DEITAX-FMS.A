@@ -567,7 +567,7 @@ export const PointOfSale: React.FC<PointOfSaleProps> = ({
                 Staff Clock-In Required Prior to Processing POS Transactions
               </h3>
               <p className="text-xs text-amber-300">
-                DT-FMS mandates PIN clock-in to link sales with attendant 3-way shift cash/meter/tank reconciliation.
+                DEITAX FMS.A mandates PIN clock-in to link sales with attendant 3-way shift cash/meter/tank reconciliation.
               </p>
             </div>
           </div>
@@ -988,7 +988,7 @@ export const PointOfSale: React.FC<PointOfSaleProps> = ({
                 />
                 <input
                   type="text"
-                  placeholder="Customer KRA PIN (e.g. P051283912Z)"
+                  placeholder="Customer Tax PIN (e.g. P051283912Z)"
                   value={customerPin}
                   onChange={(e) => setCustomerPin(e.target.value)}
                   className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-1.5 text-xs font-mono text-slate-200 placeholder:text-slate-600 uppercase focus:outline-none focus:ring-1 focus:ring-emerald-500"
@@ -1219,7 +1219,7 @@ export const PointOfSale: React.FC<PointOfSaleProps> = ({
               </div>
 
               <div>
-                <label className="block text-slate-400 mb-1">KRA PIN *</label>
+                <label className="block text-slate-400 mb-1">Tax PIN *</label>
                 <input
                   type="text"
                   value={quickCustomerPin}

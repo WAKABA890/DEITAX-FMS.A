@@ -46,6 +46,12 @@ function coreCounts(sqlite: Database.Database) {
 }
 
 function removeAutomationFoundation(sqlite: Database.Database) {
+  // The legacy fixture predates automation evidence. Clear later-phase evidence
+  // only in this disposable copy before downgrading its foundation tables.
+  sqlite.pragma('foreign_keys = OFF');
+  const tables=sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'automation_%'").all() as Array<{name:string}>;
+  for(const {name} of tables)sqlite.exec('DELETE FROM "'+name.replaceAll('"','""')+'"');
+
   sqlite.exec(`
     DROP TABLE IF EXISTS automation_logs;
     DROP TABLE IF EXISTS automation_sync_cursors;
@@ -59,7 +65,8 @@ function removeAutomationFoundation(sqlite: Database.Database) {
       '022_reconcile_station_settings_schema',
       '023_add_automation_foundation',
       '024_expand_controller_management',
-      '025_device_discovery_and_mapping'
+      '025_device_discovery_and_mapping',
+      '030_automated_fuel_transaction_engine'
     );
   `);
 }

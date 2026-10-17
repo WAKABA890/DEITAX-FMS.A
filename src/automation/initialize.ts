@@ -18,7 +18,7 @@ const FOUNDATION_TABLES = [
 
 /**
  * Phase 1 initialization performs only a read-only foundation check. It never
- * opens a controller connection, starts polling, or blocks core DT-FMS startup.
+ * opens a controller connection, starts polling, or blocks core DEITAX FMS.A startup.
  */
 export function initializeAutomationFoundation(
   sqlite: Database.Database,
@@ -42,7 +42,7 @@ export function initializeAutomationFoundation(
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.warn(`[Automation] Foundation unavailable; DT-FMS core will continue: ${message}`);
+    console.warn(`[Automation] Foundation unavailable; DEITAX FMS.A core will continue: ${message}`);
     return { available: false, enabled: false, message };
   }
 }

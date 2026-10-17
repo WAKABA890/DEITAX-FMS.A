@@ -75,12 +75,12 @@ export const Login: React.FC<LoginProps> = ({ users, onLoginSuccess, onSignupCli
           <div className="flex items-center justify-start gap-3 mb-3 w-fit">
             <img
               src={logo}
-              alt="Deitax FMS 2.0"
+              alt="DEITAX FMS.A"
               className="block h-14 w-14 object-contain"
             />
             <div className="leading-none text-left">
               <div className="text-[28px] font-black tracking-tight text-slate-100">Deitax</div>
-              <div className="text-[12px] font-semibold tracking-[0.25em] text-slate-300 uppercase">FMS 2.0</div>
+              <div className="text-[12px] font-semibold tracking-[0.25em] text-slate-300 uppercase">FMS.A</div>
             </div>
           </div>
           <p className="text-slate-400 text-sm">Welcome back. Please login to continue.</p>
@@ -190,7 +190,7 @@ export const Login: React.FC<LoginProps> = ({ users, onLoginSuccess, onSignupCli
 
         {/* Footer */}
         <p className="text-center text-xs text-slate-500 mt-6">
-          © 2026 Deitax Fms 2.0. All rights reserved.
+          © 2026 DeitIies Technologies LTD. All rights reserved.
         </p>
       </div>
     </div>

@@ -140,6 +140,7 @@ export const canAccessModule = (moduleId: string, role?: string | null, permissi
     reconciliation: 'VIEW_THREE_WAY_LEDGER',
     approvals: 'VIEW_APPROVALS',
     invoices: 'VIEW_INVOICES',
+    customers: 'VIEW_INVOICES',
     shifts: 'VIEW_SHIFT_USERS',
     controllers: 'VIEW_AUTOMATION',
     meters: 'VIEW_AUTOMATION',
@@ -201,7 +202,20 @@ export interface FuelProduct {
   color: string;
 }
 
+export interface TankStockMovement {
+  movementType: string;
+  quantityLiters: number;
+  beforeBalance: number;
+  afterBalance: number;
+  source: string;
+  reference?: string | null;
+  occurredAt: string;
+}
+
 export interface FuelTank {
+  manualDipVolume?: number | null;
+  manualDipVariance?: number | null;
+  latestStockMovement?: TankStockMovement | null;
   id: string;
   tankName: string;
   fuelProductId: string;
@@ -221,6 +235,11 @@ export interface FuelPump {
 }
 
 export interface PumpNozzle {
+  meterFreshness?: 'FRESH'|'STALE'|'OFFLINE'|'UNAVAILABLE';
+  meterLastResetAt?: string;
+  meterReadingAt?: string;
+  meterAnomaly?: string;
+
   id: string;
   physicalPumpId?: string | null;
   nozzleNumber?: number;
@@ -325,8 +344,16 @@ export interface ShiftPlan {
 }
 
 export interface OpeningPumpReading {
+  meterBaselineVersion?: number;
+  previousClosingMeter?: number;
+  meterReadingId?: string;
+  meterControllerId?: string;
+  meterSourceOccurredAt?: string;
   pumpId: string;
+  pumpNumber?: number;
   pumpName: string;
+  nozzleNumber?: number;
+  nozzleName?: string;
   fuelName: string;
   openingMeter: number;
   reportedOpeningMeter?: number;
@@ -335,7 +362,7 @@ export interface OpeningPumpReading {
   previousShiftEnd?: string;
   unattendedMeterLiters?: number;
   unattendedSalesLiters?: number;
-  unattendedVarianceLiters?: number;
+  unattendedVarianceLiters?: number | null;
   unattendedTransactionIds?: string[];
   variance?: number;
 }
@@ -414,6 +441,8 @@ export interface CashFlowRecord {
 export interface CreditNoteItem {
   itemId: string;
   originalItemId?: string;
+  /** Persisted source nozzle for RTT fuel returns; derived only from the original sale. */
+  sourceNozzleId?: string | null;
   name: string;
   type: 'Fuel' | 'Shop';
   qty: number;
@@ -529,8 +558,13 @@ export interface Transaction {
 }
 
 export interface PumpReconciliationReading {
+  totalAssociatedSalesLiters?: number;
+  closingMeterReadingId?: string;
   pumpId: string;
+  pumpNumber?: number;
   pumpName: string;
+  nozzleNumber?: number;
+  nozzleName?: string;
   fuelName: string;
   openingMeter: number;
   closingMeter: number;
@@ -577,7 +611,7 @@ export interface ThreeWayReconciliation {
   totalActualCash: number;
   cashVariance: number;
   pumpReadings: PumpReconciliationReading[];
-  totalPumpVarianceLiters: number;
+  totalPumpVarianceLiters: number | null;
   tankDips: TankReconciliationDip[];
   totalTankVarianceLiters: number;
   status: 'Auto-Approved' | 'Warning' | 'Pending Approval' | 'Approved' | 'Rejected' | 'Overridden';
@@ -607,8 +641,8 @@ export interface ManagerApproval {
   id: string;
   timestamp: string;
   shiftId?: string;
-  type: 'Cash Variance' | 'Fuel Discrepancy' | 'Price Override' | 'Shift Cancellation' | 'Nozzle Reading Variance' | 'Unattended Sales Variance';
-  reviewScope?: 'READING';
+  type: 'Cash Variance' | 'Fuel Discrepancy' | 'Price Override' | 'Shift Cancellation' | 'Nozzle Reading Variance' | 'Unattended Sales Variance' | 'Shift Variance Review';
+  reviewScope?: 'READING' | 'SHIFT';
   readingVarianceId?: string;
   requestedBy: string;
   reason: string;

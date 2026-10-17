@@ -42,7 +42,7 @@ export const INITIAL_APPROVALS: ManagerApproval[] = [];
 export const INITIAL_AUDIT_LOGS: AuditLog[] = [];
 
 export const INITIAL_STATION_SETTINGS: StationSettings = {
-  stationName: 'DT-FMS Station',
+  stationName: 'DEITAX FMS.A Station',
   tagline: 'Fuel management with full accountability',
   taxPin: '',
   address: '',

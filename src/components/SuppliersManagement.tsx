@@ -129,7 +129,7 @@ export const SuppliersManagement: React.FC<SuppliersManagementProps> = ({
       return;
     }
     if(suppliers.some(s=>s.id!==editingSupplier?.id&&s.name.trim().toLowerCase()===supName.trim().toLowerCase())){setFeedback({type:'error',message:'A supplier with this name already exists.'});return;}
-    if(supKraPin.trim()&&suppliers.some(s=>s.id!==editingSupplier?.id&&String(s.kraPin||'').trim().toUpperCase()===supKraPin.trim().toUpperCase())){setFeedback({type:'error',message:'A supplier with this KRA PIN already exists.'});return;}
+    if(supKraPin.trim()&&suppliers.some(s=>s.id!==editingSupplier?.id&&String(s.kraPin||'').trim().toUpperCase()===supKraPin.trim().toUpperCase())){setFeedback({type:'error',message:'A supplier with this Tax PIN already exists.'});return;}
 
     setIsSubmittingSup(true);
     setFeedback(null);
@@ -233,7 +233,7 @@ export const SuppliersManagement: React.FC<SuppliersManagementProps> = ({
         <div className="space-y-1">
           <div className="flex items-center gap-2">
             <Truck className="w-6 h-6 text-emerald-400" />
-            <h1 className="text-xl font-black text-slate-100 tracking-tight">Suppliers & OMC Fuel Procurement Management</h1>
+            <h1 className="text-xl font-black text-slate-100 tracking-tight">Suppliers & OMCs</h1>
           </div>
           <p className="text-xs text-slate-400">
             Manage Oil Marketing Companies (OMCs), wholesale fuel suppliers, credit balances, and payout ledgers.
@@ -325,7 +325,7 @@ export const SuppliersManagement: React.FC<SuppliersManagementProps> = ({
           <Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-500" />
           <input
             type="text"
-            placeholder="Search supplier, KRA PIN, phone..."
+            placeholder="Search supplier, Tax PIN, phone..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-9 pr-4 py-2 text-xs text-slate-200 focus:outline-none focus:border-emerald-500"
@@ -346,7 +346,7 @@ export const SuppliersManagement: React.FC<SuppliersManagementProps> = ({
                   </div>
                   {sup.kraPin && (
                     <span className="text-[11px] text-slate-400 font-mono bg-slate-950 px-2 py-0.5 rounded border border-slate-800">
-                      KRA PIN: {sup.kraPin}
+                      Tax PIN: {sup.kraPin}
                     </span>
                   )}
                 </div>
@@ -535,7 +535,7 @@ export const SuppliersManagement: React.FC<SuppliersManagementProps> = ({
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-slate-400 font-bold mb-1">KRA PIN Number</label>
+                  <label className="block text-slate-400 font-bold mb-1">Tax PIN Number</label>
                   <input
                     type="text"
                     placeholder="P051019284K"

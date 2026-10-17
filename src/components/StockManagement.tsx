@@ -88,6 +88,7 @@ export const StockManagement: React.FC<StockManagementProps> = ({
   const [isSubmittingItem, setIsSubmittingItem] = useState(false);
 
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const STOCK_AUDIT_PAGE_SIZE = 10;
   const [adjustmentPage, setAdjustmentPage] = useState(1);
   const [remoteAdjustments, setRemoteAdjustments] = useState<StockAdjustment[]>([]);
   const [adjustmentTotal, setAdjustmentTotal] = useState(0);
@@ -101,7 +102,12 @@ export const StockManagement: React.FC<StockManagementProps> = ({
     return Number.isFinite(numericValue) ? numericValue : fallback;
   };
   const formatAuditTimestamp = (value?: string) => {
-    const parsed = value ? new Date(value) : null;
+    const raw = String(value || '').trim();
+    // SQLite CURRENT_TIMESTAMP is UTC but has no offset; label it before browser parsing.
+    const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(raw)
+      ? raw.replace(' ', 'T') + 'Z'
+      : raw;
+    const parsed = normalized ? new Date(normalized) : null;
     return parsed && !Number.isNaN(parsed.getTime()) ? parsed.toLocaleString() : 'Legacy record (date unavailable)';
   };
 
@@ -322,7 +328,7 @@ export const StockManagement: React.FC<StockManagementProps> = ({
     let cancelled = false;
     setAdjustmentsLoading(true);
     setAdjustmentsError(null);
-    api.getStockAdjustmentPage(adjustmentPage, 15)
+    api.getStockAdjustmentPage(adjustmentPage, STOCK_AUDIT_PAGE_SIZE)
       .then((result) => {
         if (cancelled) return;
         setRemoteAdjustments(result.records);
@@ -341,7 +347,7 @@ export const StockManagement: React.FC<StockManagementProps> = ({
         <div className="space-y-1">
           <div className="flex items-center gap-2">
             <Package className="w-6 h-6 text-emerald-400" />
-            <h1 className="text-xl font-black text-slate-100 tracking-tight">Fuel & Shop Inventory Stock Management</h1>
+            <h1 className="text-xl font-black text-slate-100 tracking-tight">Stock & Inventory Audit</h1>
           </div>
           <p className="text-xs text-slate-400">
             Real-time tracking of underground tank volumes, shop retail inventory, reorder point alerts, and audit adjustments.
@@ -494,14 +500,7 @@ export const StockManagement: React.FC<StockManagementProps> = ({
               <Fuel className="w-4 h-4 text-emerald-400" />
               Underground Fuel Tanks Storage & Dip Volumes
             </h3>
-            {canAdjustStock && (
-              <button
-                onClick={() => openAdjustmentModalFor('Fuel')}
-                className="text-xs text-emerald-400 hover:underline font-semibold"
-              >
-                + Record Tank Fuel Adjustment
-              </button>
-            )}
+            <span className="text-[11px] text-slate-500">Fuel balances are managed in Pumps &amp; Tanks.</span>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
@@ -556,14 +555,7 @@ export const StockManagement: React.FC<StockManagementProps> = ({
                         Value: <strong className="text-emerald-400">KES {tankValue.toLocaleString('en-KE', { minimumFractionDigits: 2 })}</strong>
                       </div>
                     </div>
-                    {canAdjustStock && (
-                      <button
-                        onClick={() => openAdjustmentModalFor('Fuel', tank)}
-                        className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-emerald-400 text-[11px] font-medium rounded-lg border border-slate-700"
-                      >
-                        Audit Level
-                      </button>
-                    )}
+
                   </div>
                 </div>
               );
@@ -694,7 +686,7 @@ export const StockManagement: React.FC<StockManagementProps> = ({
               <thead className="bg-slate-950 text-slate-400 font-mono text-[11px] uppercase border-b border-slate-800">
                 <tr>
                   <th className="py-3 px-4">Date & Time</th>
-                  <th className="py-3 px-4">Product</th>
+                  <th className="py-3 px-4">Tank / Product</th>
                   <th className="py-3 px-4">Movement</th>
                   <th className="py-3 px-4">Reason</th>
                   <th className="py-3 px-4 text-right">Qty Change</th>
@@ -707,8 +699,14 @@ export const StockManagement: React.FC<StockManagementProps> = ({
               <tbody className="divide-y divide-slate-800/60 font-mono">
                 {!adjustmentsLoading && !adjustmentsError && remoteAdjustments.map((adj) => {
                   const isNeg = adj.differenceQty < 0;
-                  const movementType = adj.differenceQty > 0 ? 'Stock Increase' : adj.differenceQty < 0 ? 'Stock Decrease' : 'No Change';
+                  const fuelTank = adj.type === 'Fuel' ? tanks.find((tank) => tank.id === adj.itemId) : undefined;
+                  const quantityUnit = adj.type === 'Fuel' ? ' L' : '';
+                  const movementType = adj.movementType || (adj.differenceQty > 0 ? 'Stock Increase' : adj.differenceQty < 0 ? 'Stock Decrease' : 'No Change');
+                  const movementLabel = movementType === 'SALE' ? 'Fuel Sale' : movementType;
+                  const isStockDecrease = movementType === 'Stock Decrease' || movementType === 'SALE';
                   const source = adj.source || 'Manual Adjustment';
+                  const isRttReturn = source === 'Credit Note RTT' || adj.reason === 'Credit Note RTT Return to Tank';
+                  const reasonLabel = isRttReturn ? 'Credit Note RTT - Return to Tank' : adj.reason;
                   const reference = adj.referenceNumber || adj.originalDocumentNumber || '—';
                   const performedBy = adj.performedBy || adj.recordedBy || 'System';
                   const valueDelta = getAdjustmentValue(adj);
@@ -716,30 +714,34 @@ export const StockManagement: React.FC<StockManagementProps> = ({
                     <tr key={adj.id} className="hover:bg-slate-800/40 transition-colors align-top">
                       <td className="py-3 px-4 text-slate-400 whitespace-nowrap">{formatAuditTimestamp(adj.timestamp)}</td>
                       <td className="py-3 px-4 font-bold text-slate-100 font-sans">
-                        <div>{adj.itemName}</div>
-                        {adj.itemCode && <div className="text-[10px] text-slate-400">{adj.itemCode}</div>}
+                        <div>{adj.type === 'Fuel' ? 'Tank: ' + adj.itemName : adj.itemName}</div>
+                        {adj.type === 'Fuel' && <div className="text-[10px] text-slate-400">Fuel: {fuelTank?.fuelName || adj.itemCode || 'Unmapped product'}</div>}
+                        {adj.itemCode && <div className="text-[10px] text-slate-500">{adj.itemCode}</div>}
                       </td>
                       <td className="py-3 px-4">
                         <span
                           className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase ${
-                            movementType === 'Stock Decrease' ? 'bg-rose-500/10 text-rose-400' :
+                            isStockDecrease ? 'bg-rose-500/10 text-rose-400' :
                             movementType === 'No Change' ? 'bg-slate-500/10 text-slate-300' :
+                            movementType === 'Stock Return' ? 'bg-emerald-500/10 text-emerald-400' :
                             adj.type === 'Fuel' ? 'bg-blue-500/10 text-blue-400' : 'bg-purple-500/10 text-purple-400'
                           }`}
                         >
-                          {movementType}
+                          {movementLabel}
                         </span>
                       </td>
                       <td className="py-3 px-4 font-sans text-slate-300 max-w-[180px]">
-                        <div>{adj.reason}</div>
-                        <div className="mt-1 text-[10px] text-slate-400">
-                          {adj.type === 'Fuel' ? 'Fuel value' : 'Stock value'}: <span className={valueDelta >= 0 ? 'text-emerald-400' : 'text-rose-400'}>KES {Math.abs(valueDelta).toLocaleString('en-KE', { minimumFractionDigits: 2 })}</span>
-                        </div>
+                        <div>{reasonLabel}</div>
+                        {!isRttReturn && (
+                          <div className="mt-1 text-[10px] text-slate-400">
+                            {adj.type === 'Fuel' ? 'Fuel value' : 'Stock value'}: <span className={valueDelta >= 0 ? 'text-emerald-400' : 'text-rose-400'}>KES {Math.abs(valueDelta).toLocaleString('en-KE', { minimumFractionDigits: 2 })}</span>
+                          </div>
+                        )}
                       </td>
                       <td className="py-3 px-4 text-right font-bold">
-                        <span className={isNeg ? 'text-rose-400' : 'text-emerald-400'}>{adj.differenceQty > 0 ? `+${adj.differenceQty}` : adj.differenceQty}</span>
+                        <span className={isNeg ? 'text-rose-400' : 'text-emerald-400'}>{(adj.differenceQty > 0 ? '+' : '') + adj.differenceQty + quantityUnit}</span>
                       </td>
-                      <td className="py-3 px-4 text-right text-slate-300 whitespace-nowrap">{adj.previousQty} → {adj.adjustedQty}</td>
+                      <td className="py-3 px-4 text-right text-slate-300 whitespace-nowrap">{adj.previousQty}{quantityUnit} to {adj.adjustedQty}{quantityUnit}</td>
                       <td className="py-3 px-4 font-sans text-slate-400">{source}</td>
                       <td className="py-3 px-4 font-sans text-slate-400 break-all">{reference}</td>
                       <td className="py-3 px-4 font-sans text-slate-400">{performedBy}</td>
@@ -766,7 +768,7 @@ export const StockManagement: React.FC<StockManagementProps> = ({
               currentPage={adjustmentPage}
               totalPages={adjustmentTotalPages}
               itemCount={adjustmentTotal}
-              pageSize={15}
+              pageSize={STOCK_AUDIT_PAGE_SIZE}
               onPageChange={setAdjustmentPage}
             />
           </div>
@@ -807,7 +809,6 @@ export const StockManagement: React.FC<StockManagementProps> = ({
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-slate-100 focus:outline-none focus:border-emerald-500 font-semibold"
                   >
                     <option value="Shop">Shop Retail Product</option>
-                    <option value="Fuel">Underground Fuel Tank</option>
                   </select>
                 </div>
 

@@ -166,7 +166,7 @@ export const CashFlowLedger: React.FC<CashFlowLedgerProps> = ({
         <div>
           <h2 className="text-xl font-bold text-slate-100 flex items-center gap-2">
             <Landmark className="w-6 h-6 text-emerald-400" />
-            Station Cash Flow & Financial Aggregation Ledger
+            Cash Flow & Accounts
           </h2>
           <p className="text-xs text-slate-400">
             Real-time tracking of fuel/shop revenues, customer credit repayments, fuel tanker payments, and operational expenses.

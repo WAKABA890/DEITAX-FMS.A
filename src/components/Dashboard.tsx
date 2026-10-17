@@ -1,3 +1,4 @@
+import { nozzleSalesVolumes, nozzleMeterVolume, calculatedNozzleReading } from '../utils/nozzle-sales-volumes';
 import React, { useState } from 'react';
 import {
   Fuel,
@@ -25,6 +26,7 @@ import {
   FuelProduct,
 } from '../types';
 import type { DashboardSalesSummary } from '../utils/sales-summary';
+import { formatTankStockMovement, tankStockPercent } from '../utils/tank-stock-presentation';
 
 interface DashboardProps {
   tanks: FuelTank[];
@@ -68,14 +70,13 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const safeTanks = tanks || [];
   const safePumps = pumps || [];
 
-  // Controller captures intentionally remain Payment Pending until settlement,
-  // but they must still be visible in the real-time transaction stream.
+  // Completed PTS-2 sales have receipts; legacy non-PTS captures retain settlement.
   const completedTx = safeTransactions.filter((transaction) => transaction.status === 'Completed' || transaction.source === 'AUTOMATION');
   const totalPages = Math.ceil(completedTx.length / pageSize);
   const paginatedTx = completedTx.slice((currentPage - 1) * pageSize, currentPage * pageSize);
 
   const dashboardSummary = summary ?? {
-    today: { totalSales: 0, fuelRevenue: 0, shopRevenue: 0, otherRevenue: 0, fuelVolumeLiters: 0, transactionCount: 0 },
+    today: { totalSales: 0, fuelRevenue: 0, shopRevenue: 0, otherRevenue: 0, fuelVolumeLiters: 0, meterFuelVolumeLiters: 0, rttReturnedLiters: 0, transactionCount: 0 },
     activeShifts: [],
     activeStaff: { count: 0, staffIds: [] },
   };
@@ -84,6 +85,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const fuelRevenueToday = today.fuelRevenue;
   const shopRevenueToday = today.shopRevenue;
   const fuelLitersToday = today.fuelVolumeLiters;
+  const meterFuelLitersToday = today.meterFuelVolumeLiters ?? fuelLitersToday;
+  const rttReturnedLitersToday = today.rttReturnedLiters ?? 0;
 
   const currentActiveShift = safeShifts
     .filter((shift) => shift.status === 'Active')
@@ -93,9 +96,11 @@ export const Dashboard: React.FC<DashboardProps> = ({
   );
 
   const tankCards = safeTanks.map((tank) => {
-    const currentVolume = Number(tank.currentLevelLiters ?? 0);
-    const capacity = Number(tank.capacityLiters ?? 0);
-    const percentage = capacity > 0 ? (currentVolume / capacity) * 100 : 0;
+    const rawCurrentVolume = Number(tank.currentLevelLiters);
+    const rawCapacity = Number(tank.capacityLiters);
+    const currentVolume = Number.isFinite(rawCurrentVolume) ? rawCurrentVolume : 0;
+    const capacity = Number.isFinite(rawCapacity) ? rawCapacity : 0;
+    const percentage = tankStockPercent(currentVolume, capacity);
     const reorderThreshold = Number(tank.reorderLevelLiters ?? 0);
     let status: 'OPTIMAL LEVEL' | 'LOW STOCK' | 'CRITICAL' | 'EMPTY / OUT OF STOCK' = 'OPTIMAL LEVEL';
 
@@ -114,30 +119,23 @@ export const Dashboard: React.FC<DashboardProps> = ({
   });
 
   const pumpCards = safePumps.map((pump) => {
-    const currentMeter = Number(pump.currentMeterReading ?? 0);
-    const openingMeter = activeShiftOpeningByNozzleId.get(pump.id) ?? currentMeter;
-    const nozzleTransactions = currentActiveShift ? safeTransactions.filter(transaction =>
-      (String((transaction as any).nozzleId || '') === pump.id || (transaction.items||[]).some(item=>String(item.nozzleId||item.pumpId||'')===pump.id))
-      && (transaction.shiftId === currentActiveShift.id || transaction.meterReconciliationShiftId === currentActiveShift.id)
-      && transaction.status !== 'Voided'
-      && (transaction.status === 'Completed' || transaction.source === 'AUTOMATION')
-    ) : [];
-    const capturedLiters = nozzleTransactions.reduce((sum, transaction) => {
-      const itemLiters=(transaction.items || []).filter(item => String(item.type || '').toUpperCase() === 'FUEL'&&String(item.nozzleId||(transaction as any).nozzleId||item.pumpId||'')===pump.id).reduce((value,item)=>value+(Number(item.qty)||0),0);
-      return sum + (itemLiters || Number((transaction as any).quantity || 0));
-    },0);
-    const capturedAmount = nozzleTransactions.reduce((sum,transaction)=>{
-      const items=(transaction.items||[]).filter(item=>String(item.type||'').toUpperCase()==='FUEL'&&String(item.nozzleId||(transaction as any).nozzleId||item.pumpId||'')===pump.id);
-      return sum+(items.length?items.reduce((value,item)=>value+Number(item.totalPrice??Number(item.qty)*Number(item.unitPrice)),0):Number(transaction.totalAmount||0));
-    },0);
-
+    const actualMeter = pump.currentMeterReading == null ? null : Number(pump.currentMeterReading);
+    const openingMeter = activeShiftOpeningByNozzleId.get(pump.id) ?? actualMeter;
+    const calculated=calculatedNozzleReading(activeShiftOpeningByNozzleId.get(pump.id),pump.id,currentActiveShift,safeTransactions,pump.meterSource==='PTS2');
+    const currentMeter=calculated.currentMeter;
+    const totalizerVariance=currentMeter==null||actualMeter==null?null:Number((actualMeter-currentMeter).toFixed(3));
+    const meterReview=!!(currentActiveShift && pump.meterLastResetAt && Date.parse(pump.meterLastResetAt)>=Date.parse(currentActiveShift.startTime));
+    const meterVolume=nozzleMeterVolume(openingMeter,actualMeter,meterReview);
+    const volumes = nozzleSalesVolumes(pump.id, currentActiveShift, safeTransactions);
     return {
       ...pump,
       openingMeter,
       currentMeter,
-      capturedLiters,
-      capturedAmount,
-      unattendedMeterLiters:Number(currentActiveShift?.openingPumpReadings?.find(reading=>reading.pumpId===pump.id)?.unattendedMeterLiters||0),
+      actualMeter,
+      calculated,
+      totalizerVariance,
+      ...volumes,
+      meterVolume,
     };
   });
 
@@ -204,7 +202,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
         <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl relative overflow-hidden group">
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-              Fuel Volume Dispensed
+              Net Fuel Dispensed
             </span>
             <div className="p-2.5 bg-amber-500/10 text-amber-400 rounded-xl border border-amber-500/20">
               <Fuel className="w-5 h-5" />
@@ -213,6 +211,10 @@ export const Dashboard: React.FC<DashboardProps> = ({
           <div className="mt-3">
             <div className="text-2xl font-black text-slate-100 font-mono">
               {fuelLitersToday.toLocaleString('en-KE', { maximumFractionDigits: 1 })} <span className="text-sm font-normal text-slate-400">Liters</span>
+            </div>
+            <div className="text-xs text-slate-400 mt-1">
+              PTS-2 meter: <span className="text-slate-200 font-semibold font-mono">{meterFuelLitersToday.toLocaleString('en-KE', { maximumFractionDigits: 3 })} L</span>
+              {rttReturnedLitersToday > 0 && <> &middot; RTT returned: <span className="text-emerald-300 font-semibold font-mono">-{rttReturnedLitersToday.toLocaleString('en-KE', { maximumFractionDigits: 3 })} L</span></>}
             </div>
             <div className="text-xs text-slate-400 mt-1">
               Fuel Revenue: <span className="text-slate-200 font-semibold font-mono">KES {fuelRevenueToday.toLocaleString()}</span>
@@ -271,10 +273,10 @@ export const Dashboard: React.FC<DashboardProps> = ({
           <div>
             <h2 className="text-lg font-bold text-slate-100 flex items-center gap-2">
               <Droplets className="w-5 h-5 text-emerald-400" />
-              Live Underground Fuel Tank Inventory & Dip Readings
+              FMS Tank Balances & Manual Dip Readings
             </h2>
             <p className="text-xs text-slate-400">
-              Real-time tank volume tracking, reorder thresholds, and manual dip logs.
+              Recorded stock balances from sales, deliveries and authorized adjustments; independent manual dip evidence.
             </p>
           </div>
           <button
@@ -289,7 +291,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
         {/* Tank Cards Grid */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
           {tankCards.map((tank) => {
-            const pct = Math.round(tank.percentage);
+            const pct = tank.percentage;
+            const pctLabel = pct.toFixed(1);
             const isReorder = tank.currentVolume <= tank.reorderThreshold;
             const isLow = pct < 30;
 
@@ -338,18 +341,22 @@ export const Dashboard: React.FC<DashboardProps> = ({
                   <div className="h-4 bg-slate-900 rounded-full border border-slate-800 p-0.5 overflow-hidden relative">
                     <div
                       className={`h-full rounded-full transition-all duration-500 ${statusBg}`}
-                      style={{ width: `${Math.min(100, Math.max(2, pct))}%` }}
+                      style={{ width: `${pct}%` }}
                     />
                     <div className="absolute inset-0 flex items-center justify-center text-[10px] font-bold text-slate-200 font-mono drop-shadow">
-                      {pct}% Capacity
+                      {pctLabel}% Capacity
                     </div>
+                  </div>
+                  <div className="flex justify-between gap-3 text-[11px] text-slate-400">
+                    <span>Latest stock movement</span>
+                    <span className="text-right font-medium text-slate-200">{formatTankStockMovement(tank.latestStockMovement)}</span>
                   </div>
                 </div>
 
                 {/* Dip Info & Action */}
                 <div className="flex items-center justify-between text-xs pt-2 border-t border-slate-800/60">
                   <div className="text-slate-400 text-[11px]">
-                    Last Dip: <span className="text-slate-200 font-mono font-semibold">{Number(tank.lastDipReading ?? 0).toLocaleString()} L</span>
+                    Latest manual dip: <span className="text-slate-200 font-mono font-semibold">{tank.manualDipVolume==null?'—':tank.manualDipVolume.toLocaleString()+' L'}</span>
                   </div>
                   <button
                     onClick={() => onOpenDipModal(tank)}
@@ -381,9 +388,9 @@ export const Dashboard: React.FC<DashboardProps> = ({
             </button>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div aria-label="Nozzle totalizer readings" tabIndex={0} className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-[36rem] overflow-y-auto overscroll-contain pr-2">
             {pumpCards.map((pump) => {
-              const dispensedLiters = pump.currentMeter - pump.openingMeter;
+
               return (
                 <div
                   key={pump.id}
@@ -400,21 +407,20 @@ export const Dashboard: React.FC<DashboardProps> = ({
                   <div className="bg-slate-900 p-2.5 rounded-lg border border-slate-800/80 font-mono text-xs space-y-1">
                     <div className="flex justify-between text-slate-400">
                       <span>Opening Nozzle Reading:</span>
-                      <span>{pump.openingMeter.toFixed(3)} L</span>
+                      <span>{pump.openingMeter==null?'Unavailable':pump.openingMeter.toFixed(3)+' L'}</span>
                     </div>
                     <div className="flex justify-between font-bold text-slate-100 text-sm">
-                      <span>Current Nozzle Reading:</span>
-                      <span className="text-emerald-400">{pump.currentMeter.toFixed(3)} L</span>
+                      <span>Current Nozzle Reading:<span className="block text-[10px] font-normal text-slate-400">Latest valid PTS-2 totalizer</span></span>
+                      <span className="text-emerald-400">{pump.actualMeter==null?'Unavailable':pump.actualMeter.toFixed(3)+' L'}</span>
                     </div>
                     <div className="flex justify-between gap-3 text-[11px] text-amber-400 pt-1 border-t border-slate-800">
-                      <span>Shift Volume · {pump.fuelName}:</span>
-                      <span className="text-right">{dispensedLiters>=0?'+':''}{dispensedLiters.toFixed(3)} L</span>
+                      <span>Shift Volume:</span>
+                      <span className="text-right">{pump.calculated.dispensedLiters==null?'Unavailable':pump.calculated.dispensedLiters.toFixed(3)+' L'}</span>
                     </div>
-                    <div className="flex justify-between text-[11px] text-slate-400"><span>Before clock-in (unattended):</span><span>{pump.unattendedMeterLiters.toFixed(3)} L</span></div>
-                    <div className="flex justify-between gap-3 text-[11px] text-slate-400">
-                      <span>Recorded Sales (incl. unattended):</span>
-                      <span className="text-right">{pump.capturedLiters.toFixed(3)} L · KES {pump.capturedAmount.toLocaleString('en-KE',{minimumFractionDigits:2})}</span>
-                    </div>
+                    {pump.totalizerVariance!=null&&Math.abs(pump.totalizerVariance)>=0.001&&<div className="text-[11px] text-amber-400">Meter variance: {pump.totalizerVariance.toFixed(3)} L · manager review required</div>}
+                    <div className="flex justify-between text-[11px] text-slate-400"><span>Before Shift Open / Unattended Sales:</span><span>{pump.beforeOpeningLiters.toFixed(3)} L</span></div>
+                    {pump.meterFreshness && pump.meterFreshness!=='FRESH' && <div className="text-amber-400 text-[11px]">Meter: {pump.meterFreshness.toLowerCase()}{pump.meterReadingAt?' · '+new Date(pump.meterReadingAt).toLocaleString():''}</div>}
+                    {pump.meterVolume.state==='Review required' && <div className="text-amber-400 text-[11px]">Meter reset or inconsistent reading — manager review required.</div>}
                   </div>
                 </div>
               );
@@ -493,8 +499,13 @@ export const Dashboard: React.FC<DashboardProps> = ({
                       Fuel {shift.totalFuelSales.toLocaleString('en-KE', { minimumFractionDigits: 2 })} | Shop {shift.totalShopSales.toLocaleString('en-KE', { minimumFractionDigits: 2 })}
                     </div>
                     <div className="mt-1 text-[10px] font-bold text-amber-300">
-                      Dispensed {(shift.dispensedLiters || 0).toFixed(3)} L · KES {(shift.dispensedAmount || 0).toLocaleString('en-KE', { minimumFractionDigits: 2 })}
+                      Net dispensed {(shift.dispensedLiters || 0).toFixed(3)} L &middot; KES {(shift.dispensedAmount || 0).toLocaleString('en-KE', { minimumFractionDigits: 2 })}
                     </div>
+                    {(shift.rttReturnedLiters || 0) > 0 && (
+                      <div className="text-[10px] text-slate-500 mt-0.5">
+                        PTS-2 meter {(shift.meterDispensedLiters || 0).toFixed(3)} L &middot; RTT returned -{(shift.rttReturnedLiters || 0).toFixed(3)} L
+                      </div>
+                    )}
                   </div>
                 </div>
                 );

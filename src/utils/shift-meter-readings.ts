@@ -12,32 +12,35 @@ export function nozzleTransactionLiters(tx:any,nozzleId:string):number{
 }
 export const isMeterSale=(tx:any)=>tx.status!=='Voided'&&(tx.status==='Completed'||tx.source==='AUTOMATION');
 
-/** User observations are evidence only. Continuity uses the last physical closing. */
+/** User observations are evidence only. Opening uses the controller snapshot; the prior closing is separate gap evidence. */
 export function buildOpeningNozzleReadings(pumps:any[],submitted:any[],system:Map<string,number>,previous:Map<string,{shiftId:string;endTime:string;meter:number}>,transactions:any[],at:string){
   const reported=new Map(submitted.map(reading=>[String(reading.pumpId),reading]));
   return pumps.map(pump=>{
     const id=String(pump.id),prior=previous.get(id),authoritativeOpeningMeter=system.get(id);
     if(authoritativeOpeningMeter==null||!Number.isFinite(authoritativeOpeningMeter))throw new Error(`System meter unavailable for ${pump.pumpName||id}.`);
-    const openingMeter=prior?.meter??authoritativeOpeningMeter;
+    const openingMeter=authoritativeOpeningMeter;
     const reportedOpeningMeter=recordedMeter(reported.get(id)?.openingMeter);
-    const unattended=prior?transactions.filter(tx=>isMeterSale(tx)&&tx.dispensedWithoutShift&&!tx.meterReconciliationShiftId&&nozzleTransactionLiters(tx,id)>0&&Date.parse(tx.timestamp)>Date.parse(prior.endTime)&&Date.parse(tx.timestamp)<=Date.parse(at)):[];
-    const unattendedMeterLiters=meterRound(authoritativeOpeningMeter-openingMeter);
+    const unattended=transactions.filter(tx=>isMeterSale(tx)&&tx.dispensedWithoutShift&&!tx.meterReconciliationShiftId&&nozzleTransactionLiters(tx,id)>0&&(!prior||Date.parse(tx.timestamp)>Date.parse(prior.endTime))&&Date.parse(tx.timestamp)<=Date.parse(at));
+    const unattendedMeterLiters=prior?meterRound(authoritativeOpeningMeter-prior.meter):0;
     const unattendedSalesLiters=meterRound(unattended.reduce((sum,tx)=>sum+nozzleTransactionLiters(tx,id),0));
-    return{pumpId:id,pumpName:pump.pumpName||'Pump Nozzle',fuelName:pump.fuelName||'Fuel',openingMeter,authoritativeOpeningMeter,reportedOpeningMeter,variance:reportedOpeningMeter==null?undefined:meterRound(reportedOpeningMeter-authoritativeOpeningMeter),previousShiftId:prior?.shiftId,previousShiftEnd:prior?.endTime,unattendedMeterLiters,unattendedSalesLiters,unattendedVarianceLiters:meterRound(unattendedMeterLiters-unattendedSalesLiters),unattendedTransactionIds:unattended.map(tx=>String(tx.id))};
+    return{meterBaselineVersion:2,previousClosingMeter:prior?.meter,pumpId:id,pumpNumber:pump.pumpNumber,nozzleNumber:pump.nozzleNumber,nozzleName:pump.nozzleName,pumpName:pump.pumpName||'Pump Nozzle',fuelName:pump.fuelName||'Fuel',openingMeter,authoritativeOpeningMeter,reportedOpeningMeter,variance:reportedOpeningMeter==null?undefined:meterRound(reportedOpeningMeter-authoritativeOpeningMeter),previousShiftId:prior?.shiftId,previousShiftEnd:prior?.endTime,unattendedMeterLiters,unattendedSalesLiters,unattendedVarianceLiters:prior?meterRound(unattendedMeterLiters-unattendedSalesLiters):null,unattendedTransactionIds:unattended.map(tx=>String(tx.id))};
   });
 }
 
-/** Physical movement includes the unattended interval; collections never reassign dispensing. */
-export function buildClosingNozzleReadings(openings:any[],submitted:any[],system:Map<string,number>,transactions:any[],shiftId:string){
+/** Compare during-shift physical movement with during-shift sales; retain gap sales separately. */
+export function buildClosingNozzleReadings(openings:any[],submitted:any[],system:Map<string,number>,transactions:any[],shiftId:string,allowReview=false){
   const reported=new Map(submitted.map(reading=>[String(reading.pumpId),reading]));
   return openings.map(opening=>{
     const nozzleId=String(opening.pumpId),openingMeter=Number(opening.openingMeter),closingMeter=system.get(nozzleId);
-    if(!Number.isFinite(openingMeter)||closingMeter==null||!Number.isFinite(closingMeter)||closingMeter<openingMeter)throw new Error(`Invalid system closing meter for ${opening.pumpName||nozzleId}. It must be at least the opening reading.`);
+    const meterIssue=!Number.isFinite(openingMeter)||closingMeter==null||!Number.isFinite(closingMeter)?'METER_UNAVAILABLE':closingMeter<openingMeter?'METER_RESET_OR_DECREASE':null;
+    if(meterIssue&&!allowReview)throw new Error(`Invalid system closing meter for ${opening.pumpName||nozzleId}. It must be at least the opening reading.`);
     const reportedClosingMeter=recordedMeter(reported.get(nozzleId)?.closingMeter);
     const sales=transactions.filter(tx=>isMeterSale(tx)&&(tx.shiftId===shiftId||tx.meterReconciliationShiftId===shiftId));
     const unattendedSalesLiters=meterRound(sales.filter(tx=>tx.dispensedWithoutShift&&tx.meterReconciliationShiftId===shiftId).reduce((sum,tx)=>sum+nozzleTransactionLiters(tx,nozzleId),0));
-    const posSalesLiters=meterRound(sales.reduce((sum,tx)=>sum+nozzleTransactionLiters(tx,nozzleId),0));
-    const meterSalesLiters=meterRound(closingMeter-openingMeter),unattendedMeterLiters=Number(opening.unattendedMeterLiters||0);
-    return{pumpId:nozzleId,pumpName:opening.pumpName,fuelName:opening.fuelName,openingMeter,closingMeter,authoritativeClosingMeter:closingMeter,reportedClosingMeter,reportedVarianceLiters:reportedClosingMeter==null?undefined:meterRound(reportedClosingMeter-closingMeter),posSalesLiters,meterSalesLiters,varianceLiters:meterRound(meterSalesLiters-posSalesLiters),unattendedMeterLiters,unattendedSalesLiters,staffedMeterLiters:meterRound(meterSalesLiters-unattendedMeterLiters)};
+    const totalAssociatedSalesLiters=meterRound(sales.reduce((sum,tx)=>sum+nozzleTransactionLiters(tx,nozzleId),0));
+    const posSalesLiters=meterRound(totalAssociatedSalesLiters-unattendedSalesLiters);
+    const rawMeterDelta=closingMeter==null?null:meterRound(closingMeter-openingMeter);
+    const meterSalesLiters=meterIssue?null:rawMeterDelta,unattendedMeterLiters=Number(opening.unattendedMeterLiters||0);
+    return{meterIssue,rawMeterDelta,pumpId:nozzleId,pumpNumber:opening.pumpNumber,nozzleNumber:opening.nozzleNumber,nozzleName:opening.nozzleName,pumpName:opening.pumpName,fuelName:opening.fuelName,openingMeter,closingMeter:closingMeter??null,authoritativeClosingMeter:closingMeter??null,reportedClosingMeter,reportedVarianceLiters:reportedClosingMeter==null||closingMeter==null?undefined:meterRound(reportedClosingMeter-closingMeter),posSalesLiters,totalAssociatedSalesLiters,meterSalesLiters,varianceLiters:meterSalesLiters==null?null:meterRound(meterSalesLiters-posSalesLiters),unattendedMeterLiters,unattendedSalesLiters,staffedMeterLiters:meterSalesLiters};
   });
 }

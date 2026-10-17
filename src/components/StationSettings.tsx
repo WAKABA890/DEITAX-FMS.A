@@ -127,7 +127,7 @@ export const StationSettings: React.FC<StationSettingsProps> = ({
     const taxPinPattern = /^[A-Z]\d{9}[A-Z0-9]$/i;
 
     if (!taxPinPattern.test(trimmedTaxPin)) {
-      showError('KRA Tax PIN must be in a valid format such as A123456789Z.');
+      showError('Tax PIN must be in a valid format such as A123456789Z.');
       return;
     }
 
@@ -201,7 +201,7 @@ export const StationSettings: React.FC<StationSettingsProps> = ({
           </div>
           <h2 className="text-xl font-bold text-white">Station & Tax Invoice Header Configuration</h2>
           <p className="text-xs text-slate-400 mt-1">
-            Customize station parameters, KRA eTIMS registration PIN, Paybill, and tax receipt footer notices.
+            Customize station parameters, tax registration PIN, Paybill, and tax receipt footer notices.
           </p>
         </div>
 
@@ -259,7 +259,7 @@ export const StationSettings: React.FC<StationSettingsProps> = ({
 
             {/* TAX PIN */}
             <div>
-              <label className="block text-slate-400 mb-1">KRA Tax PIN</label>
+              <label className="block text-slate-400 mb-1">Tax PIN</label>
               <input
                 type="text"
                 required
@@ -403,7 +403,7 @@ export const StationSettings: React.FC<StationSettingsProps> = ({
         <div className="lg:col-span-5 self-start bg-slate-900 border border-slate-800 p-6 rounded-2xl shadow-xl space-y-4">
           <h3 className="text-sm font-bold text-white border-b border-slate-800 pb-3 flex items-center gap-2">
             <Receipt className="w-4 h-4 text-emerald-400" />
-            <span>Live KRA Tax Receipt Header Preview</span>
+            <span>Live Tax Receipt Header Preview</span>
           </h3>
 
           <div className="invoice-header-preview bg-white text-slate-900 p-5 rounded-xl font-sans text-xs shadow-inner space-y-3">
@@ -416,7 +416,7 @@ export const StationSettings: React.FC<StationSettingsProps> = ({
                 className="invoice-header-preview-pin mt-2 border p-1.5 rounded text-[10px] font-mono font-bold"
                 style={{ backgroundColor: '#f1f5f9', borderColor: '#475569', color: '#0f172a' }}
               >
-                KRA PIN: {formData.taxPin}
+                Tax PIN: {formData.taxPin}
               </div>
             </div>
 

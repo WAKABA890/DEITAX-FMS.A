@@ -49,7 +49,7 @@ export class LiveForecourtProjection {
   }
 
   snapshot(){
-    if(!this.available)throw new Error('Live Forecourt projection is unavailable; DT-FMS core remains operational.');
+    if(!this.available)throw new Error('Live Forecourt projection is unavailable; DEITAX FMS.A core remains operational.');
     const threshold=this.freshnessSeconds();const now=Date.now();
     const controllers=this.sqlite.prepare(`SELECT * FROM automation_controllers ORDER BY name`).all() as any[];
     const controllerById=new Map(controllers.map(row=>[row.id,row]));

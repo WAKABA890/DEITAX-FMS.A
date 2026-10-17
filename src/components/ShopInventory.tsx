@@ -21,7 +21,7 @@ import * as XLSX from 'xlsx';
 import { usePermissions } from '../hooks/usePermissions';
 
 // ============================
-// CUSTOM DIALOG COMPONENT (DT-FMS)
+// CUSTOM DIALOG COMPONENT (DEITAX FMS.A)
 // ============================
 
 interface DialogProps {
@@ -633,7 +633,7 @@ SNK-RED-01,Snacks & Drinks,Red Bull Energy Drink 250ml,C,2,KE,KES,Can,220,160,48
         <div>
           <h2 className="text-xl font-bold text-slate-100 flex items-center gap-2">
             <Package className="w-6 h-6 text-blue-400" />
-            Fuel Products, Lubricants & Convenience Shop Inventory
+            Shop Retail Items
           </h2>
           <p className="text-xs text-slate-400 mt-1">
             Register new products, upload batch Excel sheets, track profit margins, and perform stock count audits.

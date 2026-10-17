@@ -32,7 +32,9 @@
     "test:pts2-readonly": "esbuild tests/pts2-readonly-adapter.integration.test.ts --bundle --platform=node --format=esm --packages=external --outfile=build/pts2-readonly-adapter.test.mjs && node build/pts2-readonly-adapter.test.mjs",
     "postinstall": "electron-builder install-app-deps",
     "desktop:dist": "node scripts/clean-desktop-output.mjs && npm run desktop:build && electron-builder --win nsis",
-    "test:pts2-shift-meters": "esbuild tests/pts2-shift-meter.integration.test.ts --bundle --platform=node --format=esm --packages=external --outfile=build/pts2-shift-meter.test.mjs && node build/pts2-shift-meter.test.mjs"
+    "test:pts2-shift-meters": "esbuild tests/pts2-shift-meter.integration.test.ts --bundle --platform=node --format=esm --packages=external --outfile=build/pts2-shift-meter.test.mjs && node build/pts2-shift-meter.test.mjs",
+    "test:manual-tank-stock": "esbuild tests/manual-tank-stock.integration.test.ts --bundle --platform=node --format=esm --packages=external --outfile=build/manual-tank-stock-test.mjs && node build/manual-tank-stock-test.mjs",
+    "test:single-station": "node --experimental-strip-types tests/single-station.integration.test.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
@@ -73,7 +75,7 @@
   },
   "build": {
     "appId": "com.deities.deitax.fmsa",
-    "productName": "DEITAX FMS.A",
+    "productName": "Deitax Fms.A",
     "directories": {
       "output": "release"
     },
@@ -97,13 +99,13 @@
         "nsis"
       ],
       "icon": "build/icon.ico",
-      "executableName": "DEITAX-FMS-A",
+      "executableName": "Deitax Fms.A",
       "artifactName": "${productName}-Setup-${version}.${ext}"
     },
     "nsis": {
       "oneClick": false,
-      "shortcutName": "DEITAX FMS.A",
-      "uninstallDisplayName": "DEITAX FMS.A",
+      "shortcutName": "Deitax Fms.A",
+      "uninstallDisplayName": "Deitax Fms.A",
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "deleteAppDataOnUninstall": false,

@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import { SINGLE_STATION_INSERT_TRIGGER } from './single-station.js';
 
 const requiredColumns: Record<string, string[]> = {
   users: ['id', 'name', 'email', 'role', 'active'],
@@ -176,6 +177,11 @@ export function validateDatabaseSchema(sqlite: Database.Database) {
     if (!match) failures.push(`${expectation.table}.${expectation.from} is missing FK to ${expectation.targetTable}.${expectation.to}`);
     else if (match.on_update !== 'CASCADE' || match.on_delete !== (expectation.onDelete||'RESTRICT')) failures.push(`${expectation.table}.${expectation.from} must use ON UPDATE CASCADE ON DELETE ${expectation.onDelete||'RESTRICT'}`);
   }
+
+  const stationCount = Number((sqlite.prepare('SELECT COUNT(*) AS count FROM station_settings').get() as {count:number}).count);
+  if (stationCount > 1) failures.push('station_settings contains more than one station; DEITAX FMS.A is single-station per database');
+  const stationTrigger = sqlite.prepare("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name=?").get(SINGLE_STATION_INSERT_TRIGGER);
+  if (!stationTrigger) failures.push('station_settings is missing the single-station insertion guard');
 
   if (sqlite.pragma('integrity_check', { simple: true }) !== 'ok') failures.push('integrity_check failed');
   if ((sqlite.pragma('foreign_key_check') as unknown[]).length) failures.push('foreign_key_check found violations');

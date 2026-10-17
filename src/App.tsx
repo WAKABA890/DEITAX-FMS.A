@@ -30,10 +30,12 @@ import { Signup } from './components/Signup';
 import { Dashboard } from './components/Dashboard';
 import { PointOfSale } from './components/PointOfSale';
 import { ShiftManagement } from './components/ShiftManagement';
-import { PumpsAndTanks } from './components/PumpsAndTanks';
+import { PumpsAndTanks } from './features/pumps-tanks/PumpsAndTanks';
+import { pumpsAndTanksApi } from './features/pumps-tanks/api/pumps-and-tanks.api';
 import { ReconciliationLedger } from './components/ReconciliationLedger';
 import { CashFlowLedger } from './components/CashFlowLedger';
-import { ManagerApprovals } from './components/ManagerApprovals';
+import { ManagerApprovals } from './features/manager-approvals/ManagerApprovals';
+import { managerApprovalsApi } from './features/manager-approvals/api/manager-approvals.api';
 import { ShopInventory } from './components/ShopInventory';
 import { InvoicesAndReceipts } from './components/InvoicesAndReceipts';
 import { SuppliersManagement } from './components/SuppliersManagement';
@@ -52,7 +54,6 @@ import { ControllersAndIntegrations } from './components/automation/ControllersA
 import { DeviceMappings } from './components/automation/DeviceMappings';
 import { LiveForecourt } from './components/automation/LiveForecourt';
 import { MetersAndTotalizers } from './components/automation/MetersAndTotalizers';
-import { AtgTankMonitoring } from './components/automation/AtgTankMonitoring';
 import { AutomationReconciliation } from './components/automation/Reconciliation';
 import { Alerts } from './components/automation/Alerts';
 import { ThemeToggle } from './components/ThemeToggle';
@@ -62,6 +63,7 @@ import { ConnectivityIndicator } from './components/ConnectivityIndicator';
 export default function App() {
   useFmsTheme();
   const [activeTab, setActiveTab] = useState<string>('dashboard');
+  const [ledgerShiftId, setLedgerShiftId] = useState<string | null>(null);
   const [showSignup, setShowSignup] = useState(false);
   const [passwordResetCurrentPin, setPasswordResetCurrentPin] = useState('');
   const [passwordResetNewPin, setPasswordResetNewPin] = useState('');
@@ -119,7 +121,6 @@ export default function App() {
 
   // Modals
   const [activeReceiptTx, setActiveReceiptTx] = useState<Transaction | null>(null);
-  const [requestedReconciliationReprint, setRequestedReconciliationReprint] = useState<ThreeWayReconciliation | null>(null);
   const [dipTankModal, setDipTankModal] = useState<FuelTank | null>(null);
   const [dipReadingInput, setDipReadingInput] = useState<number>(0);
 
@@ -145,11 +146,11 @@ export default function App() {
       reconciliation: 'VIEW_THREE_WAY_LEDGER',
       approvals: 'VIEW_APPROVALS',
       invoices: 'VIEW_INVOICES',
+      customers: 'VIEW_INVOICES',
       shifts: 'VIEW_SHIFT_USERS',
       controllers: 'VIEW_AUTOMATION',
       'live-forecourt': 'VIEW_AUTOMATION',
       meters: 'VIEW_AUTOMATION',
-      atg: 'VIEW_ATG_TANK_MONITORING',
       'automation-reconciliation': 'VIEW_RECONCILIATION',
       alerts: 'VIEW_ALERTS',
       'device-mappings': 'VIEW_DEVICE_MAPPINGS',
@@ -203,18 +204,18 @@ export default function App() {
         summary,
       ] = await Promise.all([
         api.getUsers(),
-        api.getProducts(),
-        api.getTanks(),
-        api.getPumps(),
-        api.getPumpUnits(),
+        pumpsAndTanksApi.getProducts(),
+        pumpsAndTanksApi.getTanks(),
+        pumpsAndTanksApi.getPumps(),
+        pumpsAndTanksApi.getPumpUnits(),
         api.getShopItems(),
         api.getShifts(),
         api.getSchedules(),
         api.getShiftPlans(),
         api.getSales(),
         api.getReconciliations(),
-        api.getDeliveries(),
-        api.getApprovals(),
+        pumpsAndTanksApi.getDeliveries(),
+        managerApprovalsApi.getAll(),
         api.getAuditLogs(),
         api.getSettings(),
         api.getCreditNotes(),
@@ -278,11 +279,13 @@ export default function App() {
       if (loading || stopped) return;
       loading = true;
       try {
-        const [sales, summary, livePumps, liveShifts] = await Promise.all([api.getSales(), api.getDashboardSummary(), api.getPumps(), api.getShifts()]);
+        const [sales, liveCashFlow, summary, livePumps, liveTanks, liveShifts] = await Promise.all([api.getSales(), api.getCashFlow(), api.getDashboardSummary(), pumpsAndTanksApi.getPumps(), pumpsAndTanksApi.getTanks(), api.getShifts()]);
         if (!stopped) {
           setTransactions(asArray(sales));
+          setCashFlow(asArray(liveCashFlow));
           setDashboardSummary(summary);
           setPumps(asArray(livePumps));
+          setTanks(asArray(liveTanks));
           setShifts(asArray(liveShifts));
         }
       } catch (error) {
@@ -344,45 +347,41 @@ export default function App() {
     return res;
   };
 
+  const getCurrentAuditActor = () => ({
+    userId: currentUser?.id,
+    userName: currentUser?.name,
+    userRole: currentUser?.role,
+  });
   const handleRecordDip = async (tankId: string, dipLiters: number) => {
-    const tank = await api.recordDip(
+    const tank = await pumpsAndTanksApi.recordInitialDip(
       tankId,
       dipLiters,
-      currentUser?.id,
-      currentUser?.name,
-      currentUser?.role
+      getCurrentAuditActor()
     );
     await refreshData();
     return tank;
   };
 
   const handleAddDelivery = async (deliveryData: any) => {
-    const res = await api.addDelivery(deliveryData);
+    const res = await pumpsAndTanksApi.addDelivery(deliveryData);
     await refreshData();
     return res;
   };
 
   const handleUpdatePrice = async (productId: string, newPrice: number, taxCode?: string, productName?: string) => {
-    const prod = await api.updateProductPrice(
+    const prod = await pumpsAndTanksApi.updateProductPrice(
       productId,
       newPrice,
       taxCode,
       productName,
-      currentUser?.id,
-      currentUser?.name,
-      currentUser?.role
+      getCurrentAuditActor()
     );
     await refreshData();
     return prod;
   };
 
   const handleDeleteProduct = async (productId: string) => {
-    const res = await api.deleteFuelProduct(
-      productId,
-      currentUser?.id,
-      currentUser?.name,
-      currentUser?.role
-    );
+    const res = await pumpsAndTanksApi.deleteFuelProduct(productId, getCurrentAuditActor());
     await refreshData();
     return res;
   };
@@ -580,56 +579,31 @@ export default function App() {
   };
 
   const handleRegisterTank = async (tankData: any) => {
-    const res = await api.registerTank(
-      tankData,
-      currentUser?.id,
-      currentUser?.name,
-      currentUser?.role
-    );
+    const res = await pumpsAndTanksApi.registerTank(tankData, getCurrentAuditActor());
     await refreshData();
     return res;
   };
 
   const handleDeleteTank = async (tankId: string) => {
-    const res = await api.deleteTank(
-      tankId,
-      currentUser?.id,
-      currentUser?.name,
-      currentUser?.role
-    );
+    const res = await pumpsAndTanksApi.deleteTank(tankId, getCurrentAuditActor());
     await refreshData();
     return res;
   };
 
   const handleRegisterPump = async (pumpData: any) => {
-    const res = await api.registerPump(
-      pumpData,
-      currentUser?.id,
-      currentUser?.name,
-      currentUser?.role
-    );
+    const res = await pumpsAndTanksApi.registerPump(pumpData, getCurrentAuditActor());
     await refreshData();
     return res;
   };
 
   const handleDeletePump = async (pumpId: string) => {
-    const res = await api.deletePump(
-      pumpId,
-      currentUser?.id,
-      currentUser?.name,
-      currentUser?.role
-    );
+    const res = await pumpsAndTanksApi.deletePump(pumpId, getCurrentAuditActor());
     await refreshData();
     return res;
   };
 
   const handleDeletePumpUnit = async (pumpUnitId: string) => {
-    const res = await api.deletePumpUnit(
-      pumpUnitId,
-      currentUser?.id,
-      currentUser?.name,
-      currentUser?.role
-    );
+    const res = await pumpsAndTanksApi.deletePumpUnit(pumpUnitId, getCurrentAuditActor());
     await refreshData();
     return res;
   };
@@ -642,8 +616,28 @@ export default function App() {
     managerPin: string,
     notes: string
   ) => {
-    const res = await api.resolveApproval(
+    const res = await managerApprovalsApi.resolve(
       approvalId,
+      action,
+      managerId,
+      managerName,
+      managerPin,
+      notes
+    );
+    await refreshData();
+    return res;
+  };
+
+  const handleResolveApprovals = async (
+    approvalIds: string[],
+    action: 'Approved' | 'Rejected',
+    managerId: string,
+    managerName: string,
+    managerPin: string,
+    notes: string
+  ) => {
+    const res = await managerApprovalsApi.resolveMany(
+      approvalIds,
       action,
       managerId,
       managerName,
@@ -867,7 +861,7 @@ export default function App() {
                   {settings.stationName}
                 </h1>
                 <p className="text-[10px] text-slate-400 font-mono">
-                  eTIMS PIN: {settings.taxPin}
+                  Tax PIN: {settings.taxPin}
                 </p>
               </div>
             </div>
@@ -939,10 +933,10 @@ export default function App() {
                 tanks={tanks}
                 reconciliations={reconciliations}
                 currentUser={currentUser}
-                onReprintReconciliation={(reconciliation) => {
-                  setRequestedReconciliationReprint(reconciliation);
-                  setActiveTab('invoices');
-                }}
+                onViewShiftReport={canAccessTab('reconciliation') ? (shiftId) => {
+                  setLedgerShiftId(shiftId);
+                  setActiveTab('reconciliation');
+                } : undefined}
                 onClockInSubmit={handleClockInSubmit}
                 onSubmitReconciliation={handleSubmitReconciliation}
                 onAssignSchedule={handleAssignSchedule}
@@ -996,9 +990,6 @@ export default function App() {
               <MetersAndTotalizers />
             )}
 
-            {activeTab === 'atg' && canAccessTab('atg') && (
-              <AtgTankMonitoring />
-            )}
 
             {activeTab === 'automation-reconciliation' && canAccessTab('automation-reconciliation') && (
               <AutomationReconciliation currentUser={currentUser} />
@@ -1006,7 +997,7 @@ export default function App() {
             {activeTab === 'alerts' && canAccessTab('alerts') && <Alerts currentUser={currentUser} />}
 
             {activeTab === 'reconciliation' && (
-              <ReconciliationLedger reconciliations={reconciliations} shifts={shifts} />
+              <ReconciliationLedger reconciliations={reconciliations} shifts={shifts} selectedShiftId={ledgerShiftId} onClearSelectedShift={() => setLedgerShiftId(null)} />
             )}
 
             {activeTab === 'cashflow' && (
@@ -1045,18 +1036,15 @@ export default function App() {
               />
             )}
 
-            {activeTab === 'invoices' && (
+            {(activeTab === 'invoices' || activeTab === 'customers') && canAccessTab(activeTab) && (
               <InvoicesAndReceipts
                 transactions={transactions}
                 creditNotes={creditNotes}
                 customers={customers}
                 deliveries={deliveries}
-                shifts={shifts}
-                reconciliations={reconciliations}
-                reprintReconciliation={requestedReconciliationReprint}
-                onReprintReconciliationHandled={() => setRequestedReconciliationReprint(null)}
                 settings={settings}
                 currentUser={currentUser}
+                moduleView={activeTab === 'customers' ? 'customers' : 'invoices'}
                 onCreateCreditNote={handleCreateCreditNote}
                 onOpenReceipt={setActiveReceiptTx}
                 onSaveCustomer={handleSaveCustomer}
@@ -1082,6 +1070,7 @@ export default function App() {
                 approvals={approvals}
                 currentUser={currentUser}
                 onResolveApproval={handleResolveApproval}
+                onResolveApprovals={handleResolveApprovals}
               />
             )}
 

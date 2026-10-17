@@ -23,9 +23,9 @@ const projectRoot = path.resolve(
 );
 
 // Keep the Automated Station edition completely separate from the legacy
-// DT-FMS desktop profile. This controls Electron's default userData folder,
+// Deitax Fms.A desktop profile. This controls Electron's default userData folder,
 // where this edition stores its own fms.db and startup log.
-app.setName('DEITAX FMS.A');
+app.setName('Deitax Fms.A');
 
 // Supports isolated production-startup verification without touching the
 // operator's normal Electron profile or database. Normal launches are
@@ -54,9 +54,9 @@ const writeStartupLog = (line) => {
 };
 
 const log = (message, detail) => {
-  writeStartupLog(`[DT-FMS Electron] ${message}${detail === undefined ? '' : ` ${String(detail)}`}`);
+  writeStartupLog(`[DEITAX FMS.A Electron] ${message}${detail === undefined ? '' : ` ${String(detail)}`}`);
   console.log(
-    `[DT-FMS Electron] ${message}`,
+    `[DEITAX FMS.A Electron] ${message}`,
     detail ?? ''
   );
 };
@@ -573,9 +573,9 @@ const startFmsServer =
           }
 
           console.log(
-            `[DT-FMS Server] ${line}`
+            `[DEITAX FMS.A Server] ${line}`
           );
-          writeStartupLog(`[DT-FMS Server] ${line}`);
+          writeStartupLog(`[DEITAX FMS.A Server] ${line}`);
 
           /**
            * Explicit ready signal.
@@ -583,7 +583,7 @@ const startFmsServer =
 
           const readyMatch =
             line.match(
-              /\[DT-FMS SERVER READY\]\s+(\d+)/
+              /\[DEITAX FMS.A SERVER READY\]\s+(\d+)/
             );
 
           /**
@@ -592,7 +592,7 @@ const startFmsServer =
 
           const listeningMatch =
             line.match(
-              /DT-FMS Server listening on http:\/\/127\.0\.0\.1:(\d+)/
+              /DEITAX FMS.A Server listening on http:\/\/127\.0\.0\.1:(\d+)/
             );
 
           /**
@@ -680,10 +680,10 @@ const startFmsServer =
           }
 
           console.error(
-            `[DT-FMS Server] ${line}`
+            `[DEITAX FMS.A Server] ${line}`
           );
           serverStderr = `${serverStderr}${line}\n`.slice(-12000);
-          writeStartupLog(`[DT-FMS Server stderr] ${line}`);
+          writeStartupLog(`[DEITAX FMS.A Server stderr] ${line}`);
         }
       }
     );
@@ -699,10 +699,10 @@ const startFmsServer =
       (error) => {
 
         console.error(
-          '[DT-FMS Electron] FMS server process error:',
+          '[DEITAX FMS.A Electron] FMS server process error:',
           error
         );
-        writeStartupLog(`[DT-FMS Electron] FMS server process error: ${error.stack || error.message || String(error)}`);
+        writeStartupLog(`[DEITAX FMS.A Electron] FMS server process error: ${error.stack || error.message || String(error)}`);
       }
     );
 
@@ -918,7 +918,7 @@ const registerIpcHandlers = () => {
       ) {
 
         console.error(
-          '[DT-FMS Electron] save-excel-file failed:',
+          '[DEITAX FMS.A Electron] save-excel-file failed:',
           error
         );
 
@@ -972,7 +972,7 @@ const createWindow =
       ) {
 
         console.warn(
-          '[DT-FMS Electron] Icon file not found:',
+          '[DEITAX FMS.A Electron] Icon file not found:',
           iconPath
         );
       }
@@ -1037,7 +1037,7 @@ const createWindow =
 
       /**
        * --------------------------------------------------
-       * DT-FMS ZOOM CONTROLS
+       * DEITAX FMS.A ZOOM CONTROLS
        * --------------------------------------------------
        *
        * Ctrl + +  = Zoom in
@@ -1261,7 +1261,7 @@ const createWindow =
         ) => {
 
           console.error(
-            '[DT-FMS Electron] Renderer failed to load.',
+            '[DEITAX FMS.A Electron] Renderer failed to load.',
             {
               errorCode,
               errorDescription,
@@ -1285,7 +1285,7 @@ const createWindow =
         ) => {
 
           console.error(
-            '[DT-FMS Electron] Renderer process exited.',
+            '[DEITAX FMS.A Electron] Renderer process exited.',
             details
           );
         }
@@ -1311,7 +1311,7 @@ const createWindow =
     ) {
 
       console.error(
-        '[DT-FMS Electron] Unable to start desktop application:',
+        '[DEITAX FMS.A Electron] Unable to start desktop application:',
         error
       );
 
@@ -1325,10 +1325,10 @@ const createWindow =
             'error',
 
           title:
-            'DEITAX FMS.A Startup Error',
+            'Deitax Fms.A Startup Error',
 
           message:
-            'DEITAX FMS.A could not start.',
+            'Deitax Fms.A could not start.',
 
           detail:
             error instanceof Error
@@ -1415,7 +1415,7 @@ const stopFmsServer =
         ) {
 
           console.error(
-            '[DT-FMS Electron] Failed to terminate FMS server:',
+            '[DEITAX FMS.A Electron] Failed to terminate FMS server:',
             error
           );
 
@@ -1480,7 +1480,7 @@ app.whenReady()
     (error) => {
 
       console.error(
-        '[DT-FMS Electron] Electron startup failure:',
+        '[DEITAX FMS.A Electron] Electron startup failure:',
         error
       );
 
@@ -1534,7 +1534,7 @@ app.on(
         (error) => {
 
           console.error(
-            '[DT-FMS Electron] Server shutdown error:',
+            '[DEITAX FMS.A Electron] Server shutdown error:',
             error
           );
         }
